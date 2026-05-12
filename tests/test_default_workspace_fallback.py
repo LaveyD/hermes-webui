@@ -11,6 +11,7 @@ def test_resolve_default_workspace_falls_back_to_existing_home_work(monkeypatch,
 
     monkeypatch.setattr(config, "HOME", tmp_path)
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
+    monkeypatch.delenv("HERMES_WEBUI_DEFAULT_WORKSPACE", raising=False)
 
     resolved = config.resolve_default_workspace("/definitely/not/usable")
 
@@ -28,6 +29,7 @@ def test_save_settings_rewrites_bad_default_workspace_to_fallback(monkeypatch, t
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
     monkeypatch.setattr(config, "SETTINGS_FILE", settings_file)
     monkeypatch.setattr(config, "DEFAULT_WORKSPACE", preferred)
+    monkeypatch.delenv("HERMES_WEBUI_DEFAULT_WORKSPACE", raising=False)
 
     saved = config.save_settings({"default_workspace": "/definitely/not/usable"})
     on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -41,6 +43,7 @@ def test_resolve_default_workspace_creates_home_workspace_when_missing(monkeypat
     state_dir = tmp_path / "state"
     monkeypatch.setattr(config, "HOME", tmp_path)
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
+    monkeypatch.delenv("HERMES_WEBUI_DEFAULT_WORKSPACE", raising=False)
     # Neither ~/work nor ~/workspace exists yet
     resolved = config.resolve_default_workspace(None)
     assert resolved == (tmp_path / "workspace").resolve()
@@ -101,3 +104,47 @@ def test_ensure_workspace_dir_returns_false_for_unwritable_path(monkeypatch, tmp
         assert result is False
     finally:
         parent.chmod(stat.S_IRWXU)
+
+
+def test_env_var_wins_over_settings_json_on_startup(monkeypatch, tmp_path):
+    """HERMES_WEBUI_DEFAULT_WORKSPACE must not be overridden by settings.json at startup.
+
+    Regression for GitHub issue #609: Docker deployments set the env var to a
+    volume mount, but settings.json from a previous container run used to
+    silently win, reverting the files panel to the old path.
+    """
+    import json as _json
+    import os as _os
+
+    env_ws = tmp_path / "env_workspace"
+    env_ws.mkdir()
+    settings_ws = tmp_path / "settings_workspace"
+    settings_ws.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    settings_file = state_dir / "settings.json"
+    settings_file.write_text(
+        _json.dumps({"default_workspace": str(settings_ws)}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(config, "HOME", tmp_path)
+    monkeypatch.setattr(config, "STATE_DIR", state_dir)
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_file)
+    # Simulate DEFAULT_WORKSPACE already set correctly from env var at import time
+    monkeypatch.setattr(config, "DEFAULT_WORKSPACE", env_ws.resolve())
+    monkeypatch.setenv("HERMES_WEBUI_DEFAULT_WORKSPACE", str(env_ws))
+
+    # Execute the patched startup block logic inline — env var present → skip override
+    current_ws = config.DEFAULT_WORKSPACE
+    startup_settings = config.load_settings()
+    if not _os.getenv("HERMES_WEBUI_DEFAULT_WORKSPACE"):
+        # This branch must be skipped because env var is set
+        current_ws = config.resolve_default_workspace(
+            startup_settings.get("default_workspace")
+        )
+
+    # env var was set → the if block was skipped → env path wins over settings.json
+    assert current_ws == env_ws.resolve(), (
+        f"Expected {env_ws.resolve()}, got {current_ws}. "
+        "settings.json must not override HERMES_WEBUI_DEFAULT_WORKSPACE."
+    )

@@ -1,10 +1,18 @@
 """
-Sprint 26 Tests: pluggable UI themes — settings persistence, theme default,
-custom theme names accepted.
+Sprint 26 Tests: canonical appearance settings persist and legacy theme names
+map onto the new theme + skin system.
 """
 import json, urllib.error, urllib.request
+import pathlib
+import sys
 
 from tests._pytest_port import BASE
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from api import config
 
 
 def get(path):
@@ -32,7 +40,7 @@ def test_settings_default_theme():
     assert d.get("theme") == "dark"
 
 
-def test_settings_set_theme_light():
+def test_settings_set_theme_light_persists():
     """Setting theme to 'light' should persist and round-trip."""
     try:
         d, status = post("/api/settings", {"theme": "light"})
@@ -44,55 +52,103 @@ def test_settings_set_theme_light():
         post("/api/settings", {"theme": "dark"})
 
 
-def test_settings_set_theme_solarized():
-    """Setting theme to 'solarized' should persist."""
+def test_settings_set_theme_light():
+    """Setting theme to 'light' should persist."""
     try:
-        post("/api/settings", {"theme": "solarized"})
+        post("/api/settings", {"theme": "light"})
         d, _ = get("/api/settings")
-        assert d.get("theme") == "solarized"
+        assert d.get("theme") == "light"
     finally:
         post("/api/settings", {"theme": "dark"})
 
 
-def test_settings_set_theme_monokai():
-    """Setting theme to 'monokai' should persist."""
+def test_settings_set_theme_system():
+    """Setting theme to 'system' should persist."""
     try:
-        post("/api/settings", {"theme": "monokai"})
+        post("/api/settings", {"theme": "system"})
         d, _ = get("/api/settings")
-        assert d.get("theme") == "monokai"
+        assert d.get("theme") == "system"
     finally:
         post("/api/settings", {"theme": "dark"})
 
 
-def test_settings_set_theme_nord():
-    """Setting theme to 'nord' should persist."""
+def test_settings_set_skin():
+    """Setting skin should persist."""
     try:
-        post("/api/settings", {"theme": "nord"})
+        post("/api/settings", {"skin": "ares"})
         d, _ = get("/api/settings")
-        assert d.get("theme") == "nord"
+        assert d.get("skin") == "ares"
     finally:
-        post("/api/settings", {"theme": "dark"})
+        post("/api/settings", {"skin": "default"})
 
 
-def test_settings_set_theme_slate():
-    """Setting theme to 'slate' should persist."""
+def test_settings_set_skin_poseidon():
+    """Setting skin to 'poseidon' should persist."""
     try:
-        post("/api/settings", {"theme": "slate"})
+        post("/api/settings", {"skin": "poseidon"})
         d, _ = get("/api/settings")
-        assert d.get("theme") == "slate"
+        assert d.get("skin") == "poseidon"
     finally:
-        post("/api/settings", {"theme": "dark"})
+        post("/api/settings", {"skin": "default"})
 
 
-def test_settings_custom_theme_accepted():
-    """Custom theme names should be accepted (no enum gate)."""
+def test_settings_legacy_theme_maps_to_dark_skin_pair():
+    """Legacy theme names should map to the closest supported theme + skin."""
+    try:
+        d, status = post("/api/settings", {"theme": "slate"})
+        assert status == 200
+        d2, _ = get("/api/settings")
+        assert d2.get("theme") == "dark"
+        assert d2.get("skin") == "slate"
+    finally:
+        post("/api/settings", {"theme": "dark", "skin": "default"})
+
+
+def test_settings_legacy_monokai_maps_to_sisyphus_skin():
+    """Monokai should migrate onto the closest supported accent skin."""
+    try:
+        d, status = post("/api/settings", {"theme": "monokai"})
+        assert status == 200
+        d2, _ = get("/api/settings")
+        assert d2.get("theme") == "dark"
+        assert d2.get("skin") == "sisyphus"
+    finally:
+        post("/api/settings", {"theme": "dark", "skin": "default"})
+
+
+def test_settings_unknown_theme_falls_back_to_dark_default():
+    """Unknown themes should normalize to a safe canonical appearance."""
     try:
         d, status = post("/api/settings", {"theme": "my-custom-theme"})
         assert status == 200
         d2, _ = get("/api/settings")
-        assert d2.get("theme") == "my-custom-theme"
+        assert d2.get("theme") == "dark"
+        assert d2.get("skin") == "default"
     finally:
-        post("/api/settings", {"theme": "dark"})
+        post("/api/settings", {"theme": "dark", "skin": "default"})
+
+
+def test_settings_invalid_skin_falls_back_to_default():
+    """Unknown skin names should normalize back to the default accent."""
+    try:
+        d, status = post("/api/settings", {"skin": "not-a-skin"})
+        assert status == 200
+        d2, _ = get("/api/settings")
+        assert d2.get("skin") == "default"
+    finally:
+        post("/api/settings", {"skin": "default"})
+
+
+def test_load_settings_normalizes_legacy_theme_from_file(monkeypatch, tmp_path):
+    """Existing settings.json files with legacy theme names should normalize on load."""
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"theme": "solarized"}), encoding="utf-8")
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_path)
+
+    loaded = config.load_settings()
+
+    assert loaded["theme"] == "dark"
+    assert loaded["skin"] == "poseidon"
 
 
 def test_theme_does_not_break_other_settings():
@@ -100,10 +156,10 @@ def test_theme_does_not_break_other_settings():
     d_before, _ = get("/api/settings")
     send_key_before = d_before.get("send_key")
     try:
-        post("/api/settings", {"theme": "nord"})
+        post("/api/settings", {"theme": "light"})
         d_after, _ = get("/api/settings")
         assert d_after.get("send_key") == send_key_before
-        assert d_after.get("theme") == "nord"
+        assert d_after.get("theme") == "light"
     finally:
         post("/api/settings", {"theme": "dark"})
 
@@ -111,9 +167,9 @@ def test_theme_does_not_break_other_settings():
 def test_theme_survives_round_trip():
     """Theme set via POST should appear in subsequent GET."""
     try:
-        post("/api/settings", {"theme": "monokai"})
+        post("/api/settings", {"theme": "light"})
         d, status = get("/api/settings")
         assert status == 200
-        assert d["theme"] == "monokai"
+        assert d["theme"] == "light"
     finally:
         post("/api/settings", {"theme": "dark"})

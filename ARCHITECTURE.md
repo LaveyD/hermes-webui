@@ -7,10 +7,10 @@
 >
 > Keep this document updated as architecture changes are made.
 
-> Current shipped build: `v0.50.36-local.1` (April 14, 2026).
-> Baseline: upstream `nesquena/hermes-webui` `v0.50.36`.
-> Intentional local delta: first-time password enablement from Settings immediately issues a `hermes_session` cookie so the current browser remains signed in. The previous `Assistant Reply Language` customization has been removed, and legacy `assistant_language` settings are filtered out on load/save.
-> Automated coverage: 1059 passing tests.
+> Current shipped build: `v0.50.245` (April 30, 2026).
+> Automated coverage: 3309 tests via `pytest tests/ --collect-only -q`. CI runs on Python 3.11, 3.12, and 3.13 against every PR.
+>
+> Notable architecture state as of v0.50.245: workspace panel closed/open state is preloaded via a `documentElement` dataset marker before `style.css` paints to avoid first-load flash; transcript disclosure cards animate via transitionable `max-height`/`opacity` states; thinking cards share rounded bordered card chrome with tool cards (gold palette); incremental streaming-markdown via vendored `streaming-markdown@0.2.15` (no CDN); HTTP byte-range streaming for large media; SSE-driven session sidebar with `pending_user_message` + `active_stream_id` lifecycle tracking; configurable model badges (`primary` / `fallback N`) computed in `_build_configured_model_badges()` and provider-aware in the dropdown picker.
 
 ---
 
@@ -23,15 +23,15 @@ and a demand-driven right panel used for workspace browsing and preview surfaces
 The right panel is closed by default on desktop and opens only when it is actively
 being used for browsing or previewing content.
 
+To prevent a visible first-paint mismatch on refresh, `static/index.html` preloads the
+saved workspace panel state into `document.documentElement.dataset.workspacePanel`
+before the main stylesheet loads. Desktop CSS honors that preload marker immediately,
+and `static/boot.js` keeps the dataset synchronized with the runtime panel state machine.
+
 The design philosophy is deliberately minimal. There is no build step, no bundler, no
 frontend framework. The Python server is split into a routing shell (server.py) and
 business logic modules (api/). The frontend is seven vanilla JS modules loaded from static/.
 This makes the code easy to modify from a terminal or by an agent.
-
-For the current local build, the codebase is intentionally as close to upstream as possible:
-the app now tracks upstream `v0.50.36`, keeps the password-session continuity patch in the
-settings/onboarding flow, and does not carry forward the prior reply-language preference
-feature.
 
 Hermes-level chrome is intentionally consolidated: the sidebar has no dedicated brand header.
 Instead, the footer exposes a single "Hermes WebUI" launch button that opens one tabbed
@@ -1624,3 +1624,19 @@ and #rightpanelResize. On mousemove: computes delta and clamps to min/max. On mo
 saves width to localStorage. Widths restored at boot via localStorage.getItem().
 CSS: .resize-handle with position:absolute, width:5px, cursor:col-resize.
 body.resizing added during drag to suppress text selection.
+
+
+## Workspace path trust levels
+
+`api/workspace.py` has two distinct trust functions — do not collapse them:
+
+**`validate_workspace_to_add(path)`** — used by `/api/workspaces/add` (explicit user registration).
+Permissive: blocks only non-existent, non-directory, and system root paths. The user is
+consciously registering an external path (e.g. `/mnt/d/Projects` in WSL), so we trust intent.
+
+**`resolve_trusted_workspace(path)`** — used for actual file read/write operations inside
+an existing workspace. Strict: path must be under home, in the saved workspace list, or under
+`BOOT_DEFAULT_WORKSPACE`. Prevents path traversal and unauthorized file access.
+
+The distinction matters because add uses permissive validation to avoid the circular
+dependency: you cannot get a path into the saved list if you need the saved list to add it.

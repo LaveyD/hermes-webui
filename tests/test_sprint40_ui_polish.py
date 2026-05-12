@@ -40,7 +40,7 @@ class TestActiveSessionTitleThemeColor(unittest.TestCase):
     def test_active_session_title_uses_theme_variable(self):
         """
         .session-item.active .session-title must use var(--gold) not a hardcoded hex.
-        The light-theme override line (data-theme="light") is allowed to keep its own
+        The light-mode override line (:not(.dark)) is allowed to keep its own
         hardcoded color; we only check the base/dark rule.
         """
         # Find all lines that match the active session title selector
@@ -48,7 +48,7 @@ class TestActiveSessionTitleThemeColor(unittest.TestCase):
         base_rule_lines = [
             line for line in lines
             if ".session-item.active .session-title" in line
-            and 'data-theme="light"' not in line
+            and ':not(.dark)' not in line
         ]
 
         self.assertTrue(
@@ -57,16 +57,30 @@ class TestActiveSessionTitleThemeColor(unittest.TestCase):
         )
 
         for line in base_rule_lines:
-            self.assertIn(
-                "var(--gold)",
-                line,
-                f"Expected var(--gold) in active session title rule, got: {line.strip()}"
+            self.assertTrue(
+                "var(--gold)" in line or "var(--accent-text)" in line,
+                f"Expected var(--gold) or var(--accent-text) in active session title rule, got: {line.strip()}"
             )
             self.assertNotIn(
                 "#e8a030",
                 line,
                 f"Hardcoded #e8a030 must be removed from active session title rule: {line.strip()}"
             )
+
+
+class TestDarkTopbarSelector(unittest.TestCase):
+
+    def test_topbar_dark_border_uses_root_dark_selector(self):
+        self.assertIn(
+            ":root.dark .topbar{border-bottom:1px solid rgba(255,255,255,.07);}",
+            STYLE_CSS,
+            "Topbar dark border override must target :root.dark after the theme-class migration",
+        )
+        self.assertNotIn(
+            '[data-theme="dark"] .topbar',
+            STYLE_CSS,
+            "Topbar dark border override must not keep the removed data-theme selector",
+        )
 
 
 if __name__ == "__main__":
@@ -116,85 +130,6 @@ class TestGatewaySessionNullModel(unittest.TestCase):
             gw_src,
             "api/gateway_watcher.py should assign `row['model'] or None` for the model field",
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-# ── #453 telegram badge ─────────────────────────────────────────────
-class TestTelegramBadgeMutedColor(unittest.TestCase):
-
-    def test_telegram_badge_uses_muted_color(self):
-        """Telegram badge rules must use rgba(0, 136, 204, 0.55) not #0088cc."""
-        # Extract only the telegram-related CSS block
-        telegram_lines = [
-            line for line in STYLE_CSS.splitlines()
-            if 'data-source="telegram"' in line or "data-source='telegram'" in line
-        ]
-        self.assertTrue(
-            len(telegram_lines) >= 2,
-            "Expected at least 2 telegram badge CSS rules"
-        )
-        muted_color = "rgba(0, 136, 204, 0.55)"
-        for line in telegram_lines:
-            self.assertIn(
-                muted_color, line,
-                f"Telegram CSS rule should use {muted_color!r}, got: {line!r}"
-            )
-            self.assertNotIn(
-                "#0088cc", line,
-                f"Telegram CSS rule must not use saturated #0088cc, got: {line!r}"
-            )
-
-    def test_telegram_border_left_color_muted(self):
-        """The border-left-color rule for telegram uses rgba."""
-        pattern = r'\.session-item\.cli-session\[data-source=["\']telegram["\']\]\s*\{[^}]*border-left-color:\s*rgba\(0,\s*136,\s*204,\s*0\.55\)'
-        self.assertRegex(STYLE_CSS, pattern,
-            "border-left-color for telegram should be rgba(0, 136, 204, 0.55)")
-
-    def test_telegram_after_color_muted(self):
-        """The ::after color rule for telegram uses rgba."""
-        pattern = r'\.session-item\.cli-session\[data-source=["\']telegram["\']\]::after\s*\{[^}]*color:\s*rgba\(0,\s*136,\s*204,\s*0\.55\)'
-        self.assertRegex(STYLE_CSS, pattern,
-            "::after color for telegram should be rgba(0, 136, 204, 0.55)")
-
-
-class TestFormatSourceTagHelper(unittest.TestCase):
-
-    def test_format_source_tag_helper_exists(self):
-        """_formatSourceTag function must be defined in sessions.js."""
-        self.assertIn("function _formatSourceTag(", SESSIONS_JS,
-            "_formatSourceTag helper function not found in sessions.js")
-
-    def test_format_source_tag_maps_telegram(self):
-        """_formatSourceTag maps 'telegram' to 'via Telegram'."""
-        self.assertIn("telegram:'via Telegram'", SESSIONS_JS,
-            "sessions.js should map telegram -> 'via Telegram'")
-
-    def test_format_source_tag_maps_discord(self):
-        """_formatSourceTag maps 'discord' to 'via Discord'."""
-        self.assertIn("discord:'via Discord'", SESSIONS_JS,
-            "sessions.js should map discord -> 'via Discord'")
-
-    def test_format_source_tag_maps_slack(self):
-        """_formatSourceTag maps 'slack' to 'via Slack'."""
-        self.assertIn("slack:'via Slack'", SESSIONS_JS,
-            "sessions.js should map slack -> 'via Slack'")
-
-    def test_metabits_uses_format_helper(self):
-        """The metaBits push for source_tag should use _formatSourceTag with a null guard."""
-        # Fix #429: the push now uses a temp variable guard to suppress null/N/A results:
-        #   const _stLabel=_formatSourceTag(s.source_tag); if(_stLabel) metaBits.push(_stLabel)
-        # The old direct push pattern is gone; verify the guarded pattern is present.
-        self.assertIn("_formatSourceTag(s.source_tag)", SESSIONS_JS,
-            "metaBits push should still use _formatSourceTag() for source_tag display")
-        self.assertIn("metaBits.push(_stLabel)", SESSIONS_JS,
-            "metaBits push should use guarded _stLabel variable (fix #429)")
-
-    def test_raw_source_tag_not_pushed_directly(self):
-        """The old raw metaBits.push(s.source_tag) should not exist."""
-        self.assertNotIn("metaBits.push(s.source_tag)", SESSIONS_JS,
-            "Raw s.source_tag should not be pushed directly to metaBits")
 
 
 if __name__ == "__main__":
@@ -267,10 +202,10 @@ class TestWorkspaceChipAfterProfileSwitch(unittest.TestCase):
     """Verify that switchToProfile() applies the profile default workspace
     to the new session when a conversation is in progress (fixes #424)."""
 
-    def test_workspace_chip_updated_after_profile_switch(self):
+    def test_topbar_synced_after_profile_switch(self):
         """After await newSession(false) in the sessionInProgress branch,
-        the code must call updateWorkspaceChip() so the chip reflects the
-        new profile's default workspace instead of showing 'No active workspace'."""
+        the code must call syncTopbar() so the profile/workspace chips reflect
+        the new profile's default workspace."""
         # Find the sessionInProgress block
         idx = PANELS_JS.find('if (sessionInProgress)')
         self.assertGreater(idx, -1, "sessionInProgress branch must exist in panels.js")
@@ -282,13 +217,13 @@ class TestWorkspaceChipAfterProfileSwitch(unittest.TestCase):
         self.assertIn('await newSession(false)', block,
                       "sessionInProgress branch must call await newSession(false)")
 
-        # The fix: updateWorkspaceChip() must be called after newSession(false)
+        # The fix: syncTopbar() must be called after newSession(false)
         pos_new_session = block.find('await newSession(false)')
-        pos_update_chip = block.find('updateWorkspaceChip()')
-        self.assertGreater(pos_update_chip, -1,
-                           "updateWorkspaceChip() must be called in the sessionInProgress branch")
-        self.assertGreater(pos_update_chip, pos_new_session,
-                           "updateWorkspaceChip() must be called AFTER newSession(false)")
+        pos_sync_topbar = block.find('syncTopbar()')
+        self.assertGreater(pos_sync_topbar, -1,
+                           "syncTopbar() must be called in the sessionInProgress branch")
+        self.assertGreater(pos_sync_topbar, pos_new_session,
+                           "syncTopbar() must be called AFTER newSession(false)")
 
     def test_profile_default_workspace_applied_to_new_session(self):
         """After newSession(false) the code must assign S._profileDefaultWorkspace
@@ -313,19 +248,19 @@ class TestWorkspaceChipAfterProfileSwitch(unittest.TestCase):
                       "The sessionInProgress branch must call /api/session/update "
                       "to persist the new workspace after newSession(false)")
 
-    def test_update_workspace_chip_before_render_session_list(self):
-        """updateWorkspaceChip() should be called before renderSessionList()
-        so the chip is correct when the UI re-renders."""
+    def test_sync_topbar_before_render_session_list(self):
+        """syncTopbar() should be called before renderSessionList()
+        so the chips are correct when the UI re-renders."""
         idx = PANELS_JS.find('if (sessionInProgress)')
         self.assertGreater(idx, -1)
         block = PANELS_JS[idx:idx + 1000]
 
-        pos_chip = block.find('updateWorkspaceChip()')
+        pos_sync = block.find('syncTopbar()')
         pos_render = block.find('await renderSessionList()')
-        self.assertGreater(pos_chip, -1, "updateWorkspaceChip() must exist in block")
+        self.assertGreater(pos_sync, -1, "syncTopbar() must exist in block")
         self.assertGreater(pos_render, -1, "renderSessionList() must exist in block")
-        self.assertLess(pos_chip, pos_render,
-                        "updateWorkspaceChip() must be called before renderSessionList()")
+        self.assertLess(pos_sync, pos_render,
+                        "syncTopbar() must be called before renderSessionList()")
 
 
 if __name__ == '__main__':

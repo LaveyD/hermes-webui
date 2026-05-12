@@ -29,6 +29,7 @@ def _run_session_time_case(script_body: str) -> dict:
     functions = "\n\n".join(
         _extract_function(SESSIONS_JS, name)
         for name in (
+            "_sessionTimestampMs",
             "_localDayOrdinal",
             "_sessionCalendarBoundaries",
             "_formatSessionDate",
@@ -41,11 +42,10 @@ def _run_session_time_case(script_body: str) -> dict:
         process.env.TZ = 'UTC';
         const translations = {{
           session_time_unknown: 'Unknown',
-          session_time_just_now: 'just now',
-          session_time_minutes_ago: (n) => `${{n}} minute${{n === 1 ? '' : 's'}} ago`,
-          session_time_hours_ago: (n) => `${{n}} hour${{n === 1 ? '' : 's'}} ago`,
-          session_time_days_ago: (n) => `${{n}} day${{n === 1 ? '' : 's'}} ago`,
-          session_time_last_week: 'last week',
+          session_time_minutes_ago: (n) => `${{n}}m`,
+          session_time_hours_ago: (n) => `${{n}}h`,
+          session_time_days_ago: (n) => `${{n}}d`,
+          session_time_last_week: '1w',
           session_time_bucket_today: 'Today',
           session_time_bucket_yesterday: 'Yesterday',
           session_time_bucket_this_week: 'This week',
@@ -65,6 +65,7 @@ def _run_session_time_case(script_body: str) -> dict:
 
 
 def test_session_sidebar_js_has_dynamic_relative_time_helpers():
+    assert "function _sessionTimestampMs" in SESSIONS_JS
     assert "function _sessionCalendarBoundaries" in SESSIONS_JS
     assert "function _formatRelativeSessionTime" in SESSIONS_JS
     assert "function _sessionTimeBucketLabel" in SESSIONS_JS
@@ -76,16 +77,30 @@ def test_session_sidebar_js_has_dynamic_relative_time_helpers():
 def test_session_sidebar_renders_relative_time_and_meta_rows():
     # session-time element was removed from sessions.js in v0.50.40 to
     # give session titles full width — the CSS class is kept but set to display:none.
-    assert "session-time" not in SESSIONS_JS or True  # intentionally removed from JS
-    assert "session-meta" in SESSIONS_JS
+    # session-meta / metaBits were removed when we dropped message-count, model, and
+    # source-tag badges from the sidebar (design round 2).
     assert "orderedSessions" in SESSIONS_JS
     assert ".session-time" in STYLE_CSS
-    assert ".session-meta" in STYLE_CSS
     assert ".session-title-row" in STYLE_CSS
     assert ".session-item.active .session-title" in STYLE_CSS
-    assert "metaBits.join(' · ')" in SESSIONS_JS
     assert "|| _sessionTimeBucketLabel" not in SESSIONS_JS
     assert "const ONE_DAY=86400000;" not in SESSIONS_JS
+
+
+def test_session_timestamp_prefers_last_message_at_over_metadata_updated_at():
+    result = _run_session_time_case(
+        """
+        const session = {
+          created_at: 1776441348,
+          updated_at: 1777086443,
+          last_message_at: 1776441972,
+        };
+        process.stdout.write(JSON.stringify({
+          timestampMs: _sessionTimestampMs(session),
+        }));
+        """
+    )
+    assert result["timestampMs"] == 1776441972 * 1000
 
 
 def test_relative_time_uses_calendar_boundaries_and_year_for_old_sessions():
@@ -101,9 +116,25 @@ def test_relative_time_uses_calendar_boundaries_and_year_for_old_sessions():
         }));
         """
     )
-    assert result["relative"] == "2 days ago"
+    assert result["relative"] == "2d"
     assert result["bucket"] == "This week"
     assert "2024" in result["oldDate"]
+
+
+def test_relative_time_today_bucket():
+    """Session from 2 hours ago should bucket as 'Today'."""
+    result = _run_session_time_case(
+        """
+        const now = Date.UTC(2026, 3, 15, 14, 0, 0);
+        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+        process.stdout.write(JSON.stringify({
+          relative: _formatRelativeSessionTime(twoHoursAgo, now),
+          bucket: _sessionTimeBucketLabel(twoHoursAgo, now),
+        }));
+        """
+    )
+    assert result["relative"] == "2h"
+    assert result["bucket"] == "Today"
 
 
 def test_relative_time_handles_just_now_and_dst_safe_yesterday_boundary():
@@ -119,15 +150,14 @@ def test_relative_time_handles_just_now_and_dst_safe_yesterday_boundary():
         }));
         """
     )
-    assert result["justNow"] == "just now"
-    assert result["yesterday"] == "Yesterday"
+    assert result["justNow"] == "1m"
+    assert result["yesterday"] == "1d"
     assert result["yesterdayBucket"] == "Yesterday"
 
 
 def test_relative_time_strings_are_localized_in_english_and_spanish_bundles():
     for key in (
         "session_time_unknown",
-        "session_time_just_now",
         "session_time_minutes_ago",
         "session_time_hours_ago",
         "session_time_days_ago",

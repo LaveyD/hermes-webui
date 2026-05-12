@@ -9,9 +9,14 @@ Covers:
 - streaming.py: SessionDB init is placed before AIAgent construction
 """
 import ast
+import threading
 import pathlib
 import re
+import queue
+import sys
+import types
 import unittest
+from unittest import mock
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 STREAMING_PY = (REPO_ROOT / "api" / "streaming.py").read_text()
@@ -86,6 +91,444 @@ class TestSessionDBInjection(unittest.TestCase):
             pattern,
             "_session_db must default to None before try/except block (PR #356)",
         )
+
+
+class TestRuntimeRouteInjection(unittest.TestCase):
+    """Verify WebUI forwards the resolved runtime route into AIAgent."""
+
+    def test_runtime_provider_keys_are_forwarded_to_agent(self):
+        """WebUI must pass the runtime route fields that CLI already uses.
+
+        Since issue #772 these are passed defensively via inspect-guarded kwargs
+        so the WebUI degrades gracefully against older hermes-agent builds.
+        """
+        for snippet in (
+            "_agent_kwargs['api_mode'] = _rt.get('api_mode')",
+            "_agent_kwargs['acp_command'] = _rt.get('command')",
+            "_agent_kwargs['acp_args'] = _rt.get('args')",
+            "_agent_kwargs['credential_pool'] = _rt.get('credential_pool')",
+        ):
+            self.assertIn(
+                snippet,
+                STREAMING_PY,
+                f"Missing defensive runtime route forwarding in streaming.py: {snippet}",
+            )
+
+    def test_runtime_route_is_forwarded_from_resolver_into_agent_init(self):
+        """The resolved ACP route should be passed through to AIAgent kwargs."""
+        import api.streaming as streaming
+
+        captured = {}
+        fake_session_db = object()
+        resolve_runtime_provider = mock.Mock(
+            return_value={
+                "provider": "openai-codex",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "rt-key",
+                "api_mode": "codex_responses",
+                "command": "codex",
+                "args": ["exec", "--json"],
+                "credential_pool": "openai-codex",
+            }
+        )
+
+        class FakeSession:
+            def __init__(self):
+                self.session_id = "sess-runtime-route"
+                self.title = "Existing title"
+                self.workspace = "/tmp"
+                self.model = "gpt-5.4"
+                self.messages = []
+                self.personality = None
+                self.input_tokens = 0
+                self.output_tokens = 0
+                self.estimated_cost = None
+                self.tool_calls = []
+                self.active_stream_id = None
+                self.pending_user_message = None
+                self.pending_attachments = []
+                self.pending_started_at = None
+
+            def save(self, touch_updated_at=True):
+                self._saved = True
+
+            def compact(self):
+                return {
+                    "session_id": self.session_id,
+                    "title": self.title,
+                    "workspace": self.workspace,
+                    "model": self.model,
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "pinned": False,
+                    "archived": False,
+                    "project_id": None,
+                    "profile": None,
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "estimated_cost": self.estimated_cost,
+                    "personality": self.personality,
+                }
+
+        class CapturingAgent:
+            def __init__(self, model=None, provider=None, base_url=None, api_key=None,
+                         api_mode=None, acp_command=None, acp_args=None,
+                         credential_pool=None, platform=None, quiet_mode=False,
+                         enabled_toolsets=None, fallback_model=None, session_id=None,
+                         session_db=None, stream_delta_callback=None,
+                         reasoning_callback=None, tool_progress_callback=None,
+                         clarify_callback=None, **kwargs):
+                captured["init_kwargs"] = dict(
+                    model=model, provider=provider, base_url=base_url,
+                    api_key=api_key, api_mode=api_mode, acp_command=acp_command,
+                    acp_args=acp_args, credential_pool=credential_pool,
+                    platform=platform, quiet_mode=quiet_mode,
+                    enabled_toolsets=enabled_toolsets, fallback_model=fallback_model,
+                    session_id=session_id, session_db=session_db,
+                    stream_delta_callback=stream_delta_callback,
+                    reasoning_callback=reasoning_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    clarify_callback=clarify_callback,
+                )
+                self.session_id = session_id
+                self.context_compressor = None
+                self.session_prompt_tokens = 0
+                self.session_completion_tokens = 0
+                self.session_estimated_cost_usd = None
+                self.reasoning_config = None
+                self.ephemeral_system_prompt = None
+                self._last_error = None
+
+            def run_conversation(self, **kwargs):
+                captured["run_kwargs"] = kwargs
+                return {
+                    "messages": [
+                        {"role": "user", "content": kwargs["persist_user_message"]},
+                        {"role": "assistant", "content": "ok"},
+                    ]
+                }
+
+            def interrupt(self, _message):
+                captured["interrupted"] = True
+
+        fake_session = FakeSession()
+        fake_stream_id = "stream-runtime-route"
+        fake_queue = queue.Queue()
+        fake_runtime_module = types.ModuleType("hermes_cli.runtime_provider")
+        fake_runtime_module.resolve_runtime_provider = resolve_runtime_provider
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli.runtime_provider = fake_runtime_module
+        fake_hermes_state = types.ModuleType("hermes_state")
+        fake_hermes_state.SessionDB = mock.Mock(return_value=fake_session_db)
+
+        with mock.patch.object(streaming, "get_session", return_value=fake_session), \
+             mock.patch.object(streaming, "_get_ai_agent", return_value=CapturingAgent), \
+             mock.patch.object(streaming, "resolve_model_provider", return_value=("gpt-5.4", "openai-codex", None)), \
+             mock.patch("api.config.get_config", return_value={}), \
+             mock.patch("api.config._resolve_cli_toolsets", return_value=[]), \
+             mock.patch.dict(
+                 sys.modules,
+                 {
+                     "hermes_cli": fake_hermes_cli,
+                     "hermes_cli.runtime_provider": fake_runtime_module,
+                     "hermes_state": fake_hermes_state,
+                 },
+             ):
+            streaming.STREAMS[fake_stream_id] = fake_queue
+            streaming._run_agent_streaming(
+                session_id=fake_session.session_id,
+                msg_text="hello from webui",
+                model="gpt-5.4",
+                workspace="/tmp",
+                stream_id=fake_stream_id,
+            )
+
+        resolve_runtime_provider.assert_called_once_with(requested="openai-codex")
+        init_kwargs = captured["init_kwargs"]
+        self.assertEqual(init_kwargs["api_mode"], "codex_responses")
+        self.assertEqual(init_kwargs["acp_command"], "codex")
+        self.assertEqual(init_kwargs["acp_args"], ["exec", "--json"])
+        self.assertEqual(init_kwargs["credential_pool"], "openai-codex")
+        self.assertEqual(init_kwargs["api_key"], "rt-key")
+        self.assertIs(init_kwargs["session_db"], fake_session_db)
+
+    def test_runtime_provider_forwards_interim_assistant_callback(self):
+        """WebUI must pass interim_assistant_callback to AIAgent and emit SSE events."""
+        import api.streaming as streaming
+
+        captured = {}
+
+        class CapturingAgent:
+            def __init__(
+                self,
+                model=None,
+                provider=None,
+                base_url=None,
+                api_key=None,
+                platform=None,
+                quiet_mode=False,
+                enabled_toolsets=None,
+                fallback_model=None,
+                session_id=None,
+                session_db=None,
+                stream_delta_callback=None,
+                reasoning_callback=None,
+                tool_progress_callback=None,
+                interim_assistant_callback=None,
+                clarify_callback=None,
+                **kwargs,
+            ):
+                captured["init_kwargs"] = dict(
+                    model=model, provider=provider, base_url=base_url, api_key=api_key,
+                    platform=platform, quiet_mode=quiet_mode,
+                    enabled_toolsets=enabled_toolsets, fallback_model=fallback_model,
+                    session_id=session_id, session_db=session_db,
+                    stream_delta_callback=stream_delta_callback,
+                    reasoning_callback=reasoning_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    interim_assistant_callback=interim_assistant_callback,
+                    clarify_callback=clarify_callback,
+                )
+                self.session_id = session_id
+                self.context_compressor = None
+                self.session_prompt_tokens = 0
+                self.session_completion_tokens = 0
+                self.session_estimated_cost_usd = None
+                self.reasoning_config = None
+                self.ephemeral_system_prompt = None
+                self._last_error = None
+                self.interim_assistant_callback = interim_assistant_callback
+
+            def run_conversation(self, **kwargs):
+                if self.interim_assistant_callback:
+                    self.interim_assistant_callback("Inspecting repo structure.", already_streamed=False)
+                return {
+                    "messages": [
+                        {"role": "user", "content": kwargs.get("persist_user_message", "")},
+                        {"role": "assistant", "content": "ok"},
+                    ]
+                }
+
+            def interrupt(self, _message):
+                captured["interrupted"] = True
+
+        class FakeSession:
+            session_id = "sess-interim-test"
+            title = "Test"
+            workspace = "/tmp"
+            model = "gpt-4o"
+            messages = []
+            personality = None
+            input_tokens = 0
+            output_tokens = 0
+            estimated_cost = None
+            tool_calls = []
+            active_stream_id = None
+            pending_user_message = None
+            pending_attachments = []
+            pending_started_at = None
+
+            def save(self, touch_updated_at=True, skip_index=True):
+                pass
+
+            def compact(self):
+                return {
+                    "session_id": self.session_id, "title": self.title,
+                    "workspace": self.workspace, "model": self.model,
+                    "created_at": 0, "updated_at": 0, "pinned": False,
+                    "archived": False, "project_id": None, "profile": None,
+                    "input_tokens": 0, "output_tokens": 0,
+                    "estimated_cost": None, "personality": None,
+                }
+
+            @property
+            def path(self):
+                return "/tmp/fake.json"
+
+        fake_stream_id = "stream-interim-callback"
+        fake_queue = queue.Queue()
+        fake_rt_module = types.ModuleType("hermes_cli.runtime_provider")
+        fake_rt_module.resolve_runtime_provider = mock.Mock(return_value={
+            "provider": "openai-codex",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "rt-key",
+            "api_mode": "codex_responses",
+            "command": "codex",
+            "args": ["exec", "--json"],
+            "credential_pool": object(),
+        })
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli.runtime_provider = fake_rt_module
+        fake_hermes_state = types.ModuleType("hermes_state")
+        fake_hermes_state.SessionDB = mock.Mock(return_value=object())
+
+        with mock.patch.object(streaming, "get_session", return_value=FakeSession()), \
+             mock.patch.object(streaming, "_get_ai_agent", return_value=CapturingAgent), \
+             mock.patch.object(streaming, "resolve_model_provider", return_value=("gpt-4o", "openai-codex", None)), \
+             mock.patch("api.config.get_config", return_value={}), \
+             mock.patch("api.config._resolve_cli_toolsets", return_value=[]), \
+             mock.patch.dict(sys.modules, {
+                 "hermes_cli": fake_hermes_cli,
+                 "hermes_cli.runtime_provider": fake_rt_module,
+                 "hermes_state": fake_hermes_state,
+             }):
+            streaming.STREAMS[fake_stream_id] = fake_queue
+            streaming._run_agent_streaming(
+                session_id="sess-interim-test",
+                msg_text="hello",
+                model="gpt-4o",
+                workspace="/tmp",
+                stream_id=fake_stream_id,
+            )
+
+        init_kwargs = captured["init_kwargs"]
+        self.assertIsNotNone(init_kwargs["interim_assistant_callback"])
+        self.assertTrue(callable(init_kwargs["interim_assistant_callback"]))
+
+        interim_events = []
+        while not fake_queue.empty():
+            try:
+                interim_events.append(fake_queue.get_nowait())
+            except queue.Empty:
+                break
+        self.assertTrue(
+            any(event == "interim_assistant" for event, _ in interim_events),
+            "interim_assistant callback should emit interim_assistant SSE events",
+        )
+        self.assertTrue(
+            any(
+                event == "interim_assistant" and event_data.get("text") == "Inspecting repo structure."
+                for event, event_data in interim_events
+            ),
+            "interim_assistant event should carry the assistant commentary text"
+        )
+
+    def test_clarify_callback_passes_configured_timeout_seconds(self):
+        """clarify prompt data should use clarify.timeout from config when present."""
+        import api.streaming as streaming
+
+        captured = {}
+        submit_payloads = []
+
+        class FakeEntry:
+            def __init__(self, value):
+                self.result = value
+                self.event = threading.Event()
+                self.event.set()
+
+        def fake_submit_pending(_sid, payload):
+            submit_payloads.append(payload)
+            return FakeEntry("selected")
+
+        class CapturingAgent:
+            def __init__(self, model=None, provider=None, base_url=None, api_key=None,
+                         platform=None, quiet_mode=False, enabled_toolsets=None,
+                         fallback_model=None, session_id=None, session_db=None,
+                         stream_delta_callback=None, reasoning_callback=None,
+                         tool_progress_callback=None, clarify_callback=None, **kwargs):
+                self.clarify_callback = clarify_callback
+                self.session_id = session_id
+                captured["init_kwargs"] = {
+                    "clarify_callback": clarify_callback,
+                }
+
+            def run_conversation(self, **kwargs):
+                if self.clarify_callback:
+                    captured["clarify_result"] = self.clarify_callback(
+                        "Need user confirmation",
+                        ["first", "second"],
+                    )
+                return {
+                    "messages": [
+                        {"role": "user", "content": kwargs.get("persist_user_message", "")},
+                        {"role": "assistant", "content": "ok"},
+                    ]
+                }
+
+            def interrupt(self, _message):
+                captured["interrupted"] = True
+
+        class FakeSession:
+            session_id = "sess-clarify-timeout"
+            title = "clarify-timeout test"
+            workspace = "/tmp"
+            model = "gpt-5.4"
+            messages = []
+            personality = None
+            input_tokens = 0
+            output_tokens = 0
+            estimated_cost = None
+            tool_calls = []
+            active_stream_id = None
+            pending_user_message = None
+            pending_attachments = []
+            pending_started_at = None
+
+            def save(self, touch_updated_at=True, **_kwargs):
+                pass
+
+            def compact(self):
+                return {
+                    "session_id": self.session_id,
+                    "title": self.title,
+                    "workspace": self.workspace,
+                    "model": self.model,
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "pinned": False,
+                    "archived": False,
+                    "project_id": None,
+                    "profile": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "estimated_cost": None,
+                    "personality": None,
+                }
+
+            @property
+            def path(self):
+                return "/tmp/fake.json"
+
+        fake_stream_id = "stream-clarify-timeout"
+        fake_queue = queue.Queue()
+        fake_rt_module = types.ModuleType("hermes_cli.runtime_provider")
+        fake_rt_module.resolve_runtime_provider = mock.Mock(return_value={
+            "provider": "openai-codex",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "rt-key",
+            "api_mode": "codex_responses",
+            "command": "codex",
+            "args": ["exec", "--json"],
+            "credential_pool": object(),
+        })
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli.runtime_provider = fake_rt_module
+        fake_hermes_state = types.ModuleType("hermes_state")
+        fake_hermes_state.SessionDB = mock.Mock(return_value=object())
+
+        with mock.patch.object(streaming, "get_session", return_value=FakeSession()), \
+             mock.patch.object(streaming, "_get_ai_agent", return_value=CapturingAgent), \
+             mock.patch.object(streaming, "resolve_model_provider", return_value=("gpt-5.4", "openai-codex", None)), \
+             mock.patch.object(streaming, "get_config", return_value={"clarify": {"timeout": 300}}), \
+             mock.patch("api.config._resolve_cli_toolsets", return_value=[]), \
+             mock.patch("api.clarify.submit_pending", side_effect=fake_submit_pending), \
+             mock.patch.dict(sys.modules, {
+                "hermes_cli": fake_hermes_cli,
+                "hermes_cli.runtime_provider": fake_rt_module,
+                "hermes_state": fake_hermes_state,
+             }):
+            streaming.STREAMS[fake_stream_id] = fake_queue
+            streaming._run_agent_streaming(
+                session_id="sess-clarify-timeout",
+                msg_text="please run task",
+                model="gpt-5.4",
+                workspace="/tmp",
+                stream_id=fake_stream_id,
+            )
+
+        self.assertEqual(captured["clarify_result"], "selected")
+        self.assertEqual(len(submit_payloads), 1)
+        self.assertEqual(submit_payloads[0]["timeout_seconds"], 300)
 
 
 class TestSessionDBAST(unittest.TestCase):
@@ -206,17 +649,6 @@ def test_system_prompt_title_guard_exists():
         "sessions.js must have: cleanTitle.startsWith('[SYSTEM:') guard expression"
 
 
-def test_source_display_map_defined():
-    """The _SOURCE_DISPLAY lookup map must be present and include core gateway platforms."""
-    content = _read_sessions_js()
-    assert '_SOURCE_DISPLAY' in content, \
-        "sessions.js must define _SOURCE_DISPLAY mapping for platform name lookup"
-    # Verify key platform entries are present
-    for platform in ("telegram:'Telegram'", "discord:'Discord'", "cli:'CLI'"):
-        assert platform in content, \
-            f"_SOURCE_DISPLAY must include entry for {platform}"
-
-
 def test_cleanTitle_is_let_not_const():
     """cleanTitle must be declared with let (not const) to allow reassignment in the guard."""
     content = _read_sessions_js()
@@ -296,3 +728,139 @@ def test_rendermessages_reads_reasoning_from_messages():
     # Specifically, the fallback that reads from top-level m.reasoning field
     assert 'thinkingText=m.reasoning' in src.replace(' ', ''), \
         "thinkingText=m.reasoning assignment not found in ui.js renderMessages"
+
+
+def test_streaming_restores_prior_reasoning_metadata_after_followup():
+    """Previous-turn thinking must survive later turns.
+
+    The provider-facing history strips WebUI-only `reasoning` fields, so the
+    streaming path must merge that metadata back onto the returned message
+    history before saving the session, including reinserting dropped
+    reasoning-only assistant segments.
+    """
+    src = (REPO / 'api' / 'streaming.py').read_text()
+    assert "def _restore_reasoning_metadata(" in src, \
+        "streaming.py must define a helper to restore prior reasoning metadata"
+    assert "s.context_messages = _next_context_messages" in src, \
+        "streaming.py must restore prior reasoning metadata into model context"
+    assert "s.messages = _merge_display_messages_after_agent_result(" in src, \
+        "streaming.py must merge restored result messages into the visible transcript"
+    assert "updated_messages.insert(safe_pos, copy.deepcopy(prev_msg))" in src, \
+        "streaming.py must reinsert dropped reasoning-only assistant messages"
+
+
+def test_routes_restores_prior_reasoning_metadata_after_followup():
+    """The non-streaming route path must preserve prior reasoning metadata too."""
+    src = (REPO / 'api' / 'routes.py').read_text()
+    assert "_restore_reasoning_metadata" in src, \
+        "routes.py must import reasoning metadata restoration helper"
+    assert "s.context_messages = _next_context_messages" in src, \
+        "routes.py must restore prior reasoning metadata into model context"
+    assert 's.messages = _merge_display_messages_after_agent_result(' in src, \
+        "routes.py must merge restored result messages into the visible transcript"
+
+
+class TestCredentialPoolBackwardCompat(unittest.TestCase):
+    """Verify credential_pool and other newer kwargs are skipped gracefully
+    when running against an older hermes-agent that lacks them (issue #772)."""
+
+    def test_older_agent_without_credential_pool_does_not_crash(self):
+        """WebUI must not crash with TypeError when AIAgent lacks credential_pool."""
+        import api.streaming as streaming
+
+        captured = {}
+
+        class OlderAgent:
+            """Simulates a hermes-agent build that predates credential_pool."""
+            def __init__(self, model=None, provider=None, base_url=None, api_key=None,
+                         platform=None, quiet_mode=False, enabled_toolsets=None,
+                         fallback_model=None, session_id=None, session_db=None,
+                         stream_delta_callback=None, reasoning_callback=None,
+                         tool_progress_callback=None, clarify_callback=None):
+                # No api_mode / acp_command / acp_args / credential_pool params
+                captured["init_kwargs"] = {"session_id": session_id, "model": model}
+                self.session_id = session_id
+                self.context_compressor = None
+                self.session_prompt_tokens = 0
+                self.session_completion_tokens = 0
+                self.session_estimated_cost_usd = None
+                self.reasoning_config = None
+                self.ephemeral_system_prompt = None
+                self._last_error = None
+
+            def run_conversation(self, **kwargs):
+                return {
+                    "messages": [
+                        {"role": "user", "content": kwargs.get("persist_user_message", "")},
+                        {"role": "assistant", "content": "ok"},
+                    ]
+                }
+
+            def interrupt(self, _message):
+                pass
+
+        class FakeSession:
+            session_id = "sess-compat-test"
+            title = "Test"
+            workspace = "/tmp"
+            model = "gpt-4o"
+            messages = []
+            personality = None
+            input_tokens = 0
+            output_tokens = 0
+            estimated_cost = None
+            tool_calls = []
+            active_stream_id = None
+            pending_user_message = None
+            pending_attachments = []
+            pending_started_at = None
+
+            def save(self, touch_updated_at=True):
+                pass
+
+            def compact(self):
+                return {
+                    "session_id": self.session_id, "title": self.title,
+                    "workspace": self.workspace, "model": self.model,
+                    "created_at": 0, "updated_at": 0, "pinned": False,
+                    "archived": False, "project_id": None, "profile": None,
+                    "input_tokens": 0, "output_tokens": 0,
+                    "estimated_cost": None, "personality": None,
+                }
+
+        fake_stream_id = "stream-compat-test"
+        fake_queue = queue.Queue()
+        fake_rt_module = types.ModuleType("hermes_cli.runtime_provider")
+        fake_rt_module.resolve_runtime_provider = mock.Mock(return_value={
+            "provider": "openai", "base_url": None, "api_key": "sk-test",
+            "api_mode": "chat_completions", "command": None, "args": [],
+            "credential_pool": object(),
+        })
+        fake_hermes_cli = types.ModuleType("hermes_cli")
+        fake_hermes_cli.runtime_provider = fake_rt_module
+        fake_hermes_state = types.ModuleType("hermes_state")
+        fake_hermes_state.SessionDB = mock.Mock(return_value=None)
+
+        with mock.patch.object(streaming, "get_session", return_value=FakeSession()), \
+             mock.patch.object(streaming, "_get_ai_agent", return_value=OlderAgent), \
+             mock.patch.object(streaming, "resolve_model_provider", return_value=("gpt-4o", "openai", None)), \
+             mock.patch("api.config.get_config", return_value={}), \
+             mock.patch("api.config._resolve_cli_toolsets", return_value=[]), \
+             mock.patch.dict(sys.modules, {
+                 "hermes_cli": fake_hermes_cli,
+                 "hermes_cli.runtime_provider": fake_rt_module,
+                 "hermes_state": fake_hermes_state,
+             }):
+            streaming.STREAMS[fake_stream_id] = fake_queue
+            # Must not raise TypeError
+            streaming._run_agent_streaming(
+                session_id="sess-compat-test",
+                msg_text="hello",
+                model="gpt-4o",
+                workspace="/tmp",
+                stream_id=fake_stream_id,
+            )
+
+        # Agent was constructed successfully
+        self.assertIn("session_id", captured["init_kwargs"])
+        self.assertEqual(captured["init_kwargs"]["session_id"], "sess-compat-test")

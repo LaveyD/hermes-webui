@@ -41,6 +41,16 @@ def make_session(created_list):
     return sid
 
 
+def _make_auth_json_with_credential_pool(
+    provider_id: str, pool_entries: list[dict], tmp_dir: pathlib.Path
+) -> pathlib.Path:
+    """Write an auth.json with only credential_pool entries for provider_id."""
+    store = {"providers": {}, "credential_pool": {provider_id: pool_entries}}
+    auth_path = tmp_dir / "auth.json"
+    auth_path.write_text(json.dumps(store), encoding="utf-8")
+    return auth_path
+
+
 # ── R1: uuid not imported in server.py (Sprint 10 split regression) ──────────
 
 def test_chat_start_returns_stream_id(cleanup_test_sessions):
@@ -238,8 +248,13 @@ def test_done_handler_guards_setbusy_with_inflight_check(cleanup_test_sessions):
     disable B's Send button.
     """
     src = (REPO_ROOT / "static/messages.js").read_text()
-    # The fix wraps setBusy(false) in a guard
-    assert "INFLIGHT[S.session.session_id]" in src,         "messages.js must guard setBusy(false) with INFLIGHT check for current session"
+    # The fix wraps setBusy(false) in an active-pane ownership guard. Newer
+    # implementations may centralize the guard in a helper rather than repeat the
+    # raw INFLIGHT expression at every terminal event site.
+    assert (
+        "INFLIGHT[S.session.session_id]" in src
+        or "function _setActivePaneIdleIfOwner" in src
+    ), "messages.js must guard setBusy(false) for the current session"
 
 
 def test_refresh_handler_does_not_drop_tool_messages_needed_by_todos(cleanup_test_sessions):
@@ -319,6 +334,19 @@ def test_server_delete_invalidates_index(cleanup_test_sessions):
                 f"{label} session/delete must invalidate SESSION_INDEX_FILE"
             return
     assert False, "session/delete handler not found in server.py or api/routes.py"
+
+
+def test_server_delete_removes_session_bak_snapshot(cleanup_test_sessions):
+    """session/delete must remove sidecar backups so deleted sessions stay deleted."""
+    routes_src = (REPO_ROOT / "api" / "routes.py").read_text()
+    delete_idx = max(
+        routes_src.find("if parsed.path == '/api/session/delete':"),
+        routes_src.find('if parsed.path == "/api/session/delete":'),
+    )
+    assert delete_idx >= 0, "session/delete handler not found in api/routes.py"
+    delete_block = routes_src[delete_idx:delete_idx+1400]
+    assert "with_suffix('.json.bak').unlink" in delete_block or 'with_suffix(".json.bak").unlink' in delete_block, \
+        "session/delete must unlink <sid>.json.bak to avoid later orphan-backup recovery"
 
 # ── R9: Token/tool SSE events write to wrong session after switch ─────────────
 
@@ -405,7 +433,7 @@ def test_loadSession_inflight_restores_live_tool_cards(cleanup_test_sessions):
     # INFLIGHT branch must call appendLiveToolCard
     inflight_idx = src.find("if(INFLIGHT[sid]){")
     assert inflight_idx >= 0, "INFLIGHT branch not found in loadSession"
-    inflight_block = src[inflight_idx:inflight_idx+500]
+    inflight_block = src[inflight_idx:inflight_idx+900]
     assert "appendLiveToolCard" in inflight_block,         "loadSession INFLIGHT branch must restore live tool cards via appendLiveToolCard"
     assert "clearLiveToolCards" in inflight_block,         "loadSession INFLIGHT branch must clear old live cards before restoring"
 
@@ -423,12 +451,15 @@ def test_done_handler_sets_busy_false_before_renderMessages(cleanup_test_session
     if done_idx < 0:
         done_idx = src.find("es.addEventListener('done'")
     assert done_idx >= 0
-    done_block = src[done_idx:done_idx+2500]
-    # S.busy=false must appear before renderMessages() within the done handler
+    stream_end_idx = src.find("source.addEventListener('stream_end'", done_idx)
+    assert stream_end_idx >= 0, "stream_end listener after done handler not found"
+    done_block = src[done_idx:stream_end_idx]
+    # S.busy=false must appear before the terminal render call within the done handler.
     busy_pos = done_block.find("S.busy=false;")
-    render_pos = done_block.find("renderMessages()")
+    render_pos = done_block.find("renderMessages(")
     assert busy_pos >= 0, "done handler must set S.busy=false before renderMessages()"
-    assert busy_pos < render_pos,         f"S.busy=false (pos {busy_pos}) must come before renderMessages() (pos {render_pos})"
+    assert render_pos >= 0, "done handler must call renderMessages after settling state"
+    assert busy_pos < render_pos,         f"S.busy=false (pos {busy_pos}) must come before renderMessages (pos {render_pos})"
 
 
 # ── R14: send() uses stale modelSelect.value instead of session model ────────
@@ -440,11 +471,17 @@ def test_send_uses_session_model_as_authoritative_source(cleanup_test_sessions):
     causing the wrong model to be sent.
     """
     src = (REPO_ROOT / "static/messages.js").read_text()
-    # The model field in the chat/start payload must prefer S.session.model
-    chat_start_idx = src.find("/api/chat/start")
-    assert chat_start_idx >= 0
-    payload_block = src[chat_start_idx:chat_start_idx+300]
-    assert "S.session.model" in payload_block,         "send() must use S.session.model in the chat/start payload"
+    # The model field in the chat/start payload must prefer S.session.model.
+    # PR #1591 (May 2026) added optimistic `upsertActiveSessionForLocalTurn`
+    # comments that mention `/api/chat/start` BEFORE the actual POST call, so
+    # `src.find("/api/chat/start")` may land on a comment occurrence rather
+    # than the `api('/api/chat/start',{...})` POST. Match the call signature
+    # explicitly to land on the payload block.
+    chat_start_idx = src.find("api('/api/chat/start'")
+    assert chat_start_idx >= 0, "could not find /api/chat/start POST in messages.js"
+    payload_block = src[chat_start_idx:chat_start_idx+400]
+    assert "S.session.model" in payload_block, \
+        "send() must use S.session.model in the chat/start payload"
 
 
 # ── R15: newSession does not clear live tool cards ────────────────────────────
@@ -491,8 +528,9 @@ def test_session_scoped_message_queue_frontend_wiring(cleanup_test_sessions):
     assert "const SESSION_QUEUES" in ui_src
     assert "function queueSessionMessage" in ui_src
     assert "function shiftQueuedSessionMessage" in ui_src
-    assert "const sid=S.session&&S.session.session_id;" in ui_src
-    assert "const next=sid?shiftQueuedSessionMessage(sid):null;" in ui_src
+    # _queueDrainSid tracks which session's queue to drain even after session switches
+    assert "_queueDrainSid" in ui_src
+    assert "shiftQueuedSessionMessage(sid)" in ui_src
     assert "queueSessionMessage(S.session.session_id" in messages_src
     assert "updateQueueBadge(S.session.session_id);" in messages_src
     assert "updateQueueBadge(sid);" in sessions_src
@@ -521,7 +559,8 @@ def test_reload_path_restores_pending_message_and_reattaches_live_stream(cleanup
     assert 'pending_user_message' in ui_src
     assert 'function attachLiveStream' in messages_src
     assert 'const pendingMsg=typeof getPendingSessionMessage' in sessions_src
-    assert 'const activeStreamId=data.session.active_stream_id||null;' in sessions_src
+    assert ('const activeStreamId=data.session.active_stream_id||null;' in sessions_src or
+            'const activeStreamId=S.session.active_stream_id||null;' in sessions_src)
     assert 'attachLiveStream(sid, activeStreamId' in sessions_src
     assert 'if (S.activeStreamId && S.activeStreamId === streamId) return;' in ui_src
 
@@ -580,6 +619,29 @@ def test_loadSession_inflight_sets_busy_before_renderMessages(cleanup_test_sessi
         "loadSession must set S.busy=true before renderMessages() to avoid duplicate tool cards"
 
 
+def test_loadSession_inflight_sets_active_stream_before_replaying_live_tool_cards(cleanup_test_sessions):
+    """#1715: returning to an active chat must replay persisted tool cards.
+
+    appendLiveToolCard() intentionally no-ops unless S.activeStreamId is already
+    set for the viewed streaming session. If loadSession() restores S.toolCalls
+    and replays them before assigning S.activeStreamId, the compact Activity
+    counter drops the previously-seen tools after a focus change.
+    """
+    src = (REPO_ROOT / "static/sessions.js").read_text()
+    inflight_idx = src.find("if(INFLIGHT[sid]){")
+    assert inflight_idx >= 0, "INFLIGHT branch not found in loadSession"
+    inflight_block = src[inflight_idx:inflight_idx+1000]
+    active_pos = inflight_block.find("S.activeStreamId=activeStreamId;")
+    replay_pos = inflight_block.find("appendLiveToolCard(tc);")
+    attach_pos = inflight_block.find("attachLiveStream(sid, activeStreamId")
+    assert active_pos >= 0, "loadSession INFLIGHT branch must restore S.activeStreamId"
+    assert replay_pos >= 0, "loadSession INFLIGHT branch must replay persisted live tool cards"
+    assert active_pos < replay_pos, \
+        "S.activeStreamId must be restored before appendLiveToolCard() replays persisted tools"
+    assert attach_pos < 0 or active_pos < attach_pos, \
+        "S.activeStreamId should also be restored before SSE reattach can deliver more tool events"
+
+
 def test_streaming_bridge_accepts_current_tool_progress_callback_signature(cleanup_test_sessions):
     """R17: api/streaming.py must accept the current Hermes agent callback contract.
     The agent now calls tool_progress_callback(event_type, name, preview, args, **kwargs).
@@ -594,6 +656,38 @@ def test_streaming_bridge_accepts_current_tool_progress_callback_signature(clean
         "streaming.py must emit live tool completion SSE events"
 
 
+def test_streaming_reads_reasoning_effort_from_config_dict(cleanup_test_sessions):
+    """R17b: WebUI must read agent.reasoning_effort from the dict returned by get_config().
+
+    `get_config()` returns a plain dict (not a wrapper exposing `.cfg`).  The
+    pre-fix line `_cfg.cfg.get('agent', {})` raised AttributeError that the
+    surrounding try/except swallowed, so `_reasoning_config` was always None
+    regardless of what `/reasoning <level>` had been set to.  This static
+    source assertion pins the fix because the runtime symptom is silent.
+    """
+    src = (REPO_ROOT / "api/streaming.py").read_text()
+    assert "_cfg.cfg" not in src, \
+        "get_config() returns a dict; accessing _cfg.cfg drops reasoning_config to None"
+    assert "_cfg.get('agent', {})" in src or '_cfg.get("agent", {})' in src, \
+        "streaming.py must read agent.reasoning_effort via the config dict"
+
+
+def test_streaming_agent_cache_signature_includes_reasoning_config(cleanup_test_sessions):
+    """R17c: changing reasoning effort mid-session must rebuild the cached per-session agent.
+
+    Without `_reasoning_config` participating in `_sig_blob`, the cache key
+    matches the old entry and the operator's `/reasoning xhigh` change has
+    no effect on the live session.
+    """
+    src = (REPO_ROOT / "api/streaming.py").read_text()
+    start = src.find("_sig_blob = _json.dumps")
+    end = src.find("_agent_sig", start)
+    assert start >= 0 and end > start, "agent cache signature block not found"
+    sig_block = src[start:end]
+    assert "_reasoning_config" in sig_block, \
+        "agent cache signature must include reasoning_config so xhigh/medium changes take effect"
+
+
 def test_messages_js_supports_live_reasoning_and_tool_completion(cleanup_test_sessions):
     """R18: messages.js must render live reasoning and react to tool completion events.
     Without these handlers, the operator only sees generic Thinking… or nothing
@@ -602,12 +696,31 @@ def test_messages_js_supports_live_reasoning_and_tool_completion(cleanup_test_se
     src = (REPO_ROOT / "static/messages.js").read_text()
     assert "let reasoningText=''" in src, \
         "messages.js must track streamed reasoning text separately from assistant text"
+    assert "let liveReasoningText=''" in src or 'let liveReasoningText = ""' in src, \
+        "messages.js must track the currently active reasoning segment separately from cumulative reasoning"
     assert "source.addEventListener('reasoning'" in src or 'source.addEventListener("reasoning"' in src, \
         "messages.js must listen for live reasoning SSE events"
     assert "source.addEventListener('tool_complete'" in src or 'source.addEventListener("tool_complete"' in src, \
         "messages.js must listen for live tool completion SSE events"
     assert "function _parseStreamState()" in src, \
         "messages.js must parse live stream state into reasoning + visible answer"
+
+
+def test_messages_js_supports_interim_assistant_events(cleanup_test_sessions):
+    """R18b: messages.js must render live interim assistant commentary when
+    `interim_assistant` SSE events arrive.
+
+    AIAgent emits completed mid-turn commentary through an interim callback.
+    Without a dedicated SSE handler, Codex-style interim status text disappears
+    from the live answer and users only see the final response after tool calls.
+    """
+    src = (REPO_ROOT / "static/messages.js").read_text()
+    assert "source.addEventListener('interim_assistant'" in src or 'source.addEventListener("interim_assistant"' in src, \
+        "messages.js must listen for interim_assistant SSE events"
+    assert "function _resetAssistantSegment()" in src, \
+        "messages.js should share live-segment reset logic between interim assistant updates and tool events"
+    assert "_resetAssistantSegment();" in src, \
+        "messages.js should apply segment reset when tool or interim assistant events require it"
 
 
 def test_ui_js_can_upgrade_thinking_spinner_into_live_reasoning_card(cleanup_test_sessions):
@@ -619,6 +732,73 @@ def test_ui_js_can_upgrade_thinking_spinner_into_live_reasoning_card(cleanup_tes
         "ui.js must centralize thinking row markup so it can switch between spinner and live text"
     assert "function updateThinking(text=''){appendThinking(text);}" in src or 'function updateThinking(text=""){appendThinking(text);}' in src, \
         "ui.js must expose an updateThinking helper for live reasoning rendering"
+    assert "function finalizeThinkingCard()" in src, \
+        "ui.js must expose a helper to finalize one live thinking card before starting another"
+
+
+def test_ui_js_keeps_split_thinking_cards_and_assistant_header(cleanup_test_sessions):
+    """R19b: settled render should keep distinct thinking cards for split assistant
+    turns inside a single assistant turn container, preserving one assistant header
+    for the whole response while keeping multiple thinking cards distinct.
+    """
+    src = (REPO_ROOT / "static" / "ui.js").read_text()
+    assert "pendingTurnThinking" not in src, \
+        "renderMessages must not merge distinct thinking blocks into one settled card"
+    assert "_createAssistantTurn(" in src, \
+        "renderMessages must build a shared assistant turn wrapper instead of separate top-level rows"
+    assert "assistant-segment" in src, \
+        "settled assistant turns must preserve per-message segments for multiple thinking/tool/result blocks"
+
+
+def test_ui_js_keeps_reasoning_only_assistant_messages_visible(cleanup_test_sessions):
+    """R19c: assistant messages that only contain reasoning must still survive
+    rerenders, otherwise prior thinking cards disappear on the next turn.
+    """
+    src = (REPO_ROOT / "static" / "ui.js").read_text()
+    assert "function _messageHasReasoningPayload(m)" in src, \
+        "ui.js must detect reasoning-only assistant messages"
+    assert "hasTc||hasTu||_messageHasReasoningPayload(m)" in src.replace(' ', ''), \
+        "renderMessages visibility filter must preserve reasoning-only assistant messages"
+
+
+def test_ui_js_does_not_hide_anchor_segments_that_contain_thinking(cleanup_test_sessions):
+    """R19c2/R19c3: reasoning-only messages must remain visible through the
+    shared collapsed activity dropdown, even when the anchor segment has no prose.
+    """
+    src = (REPO_ROOT / "static" / "ui.js").read_text()
+    compact = src.replace(' ', '').replace('\n', '')
+    assert "assistantThinking.set(rawIdx,thinkingText)" in compact, \
+        "renderMessages must preserve reasoning text before hiding empty anchor segments"
+    assert "_thinkingActivityNode(thinkingText)" in src, \
+        "thinking-only assistant content should render inside the shared activity dropdown"
+
+
+def test_messages_js_live_assistant_segment_reuses_live_turn_wrapper(cleanup_test_sessions):
+    """R19d: live streaming must reuse the existing live assistant turn wrapper created
+    by appendThinking(), otherwise the header gets recreated when answer tokens start.
+    """
+    src = (REPO_ROOT / "static" / "messages.js").read_text()
+    assert "function ensureAssistantRow(force=false)" in src or 'function ensureAssistantRow(force = false)' in src, \
+        "ensureAssistantRow should manage the live assistant content segment"
+    assert "let turn=$('liveAssistantTurn');" in src, \
+        "ensureAssistantRow must bind to the existing live assistant turn wrapper"
+    assert "appendThinking();" in src, \
+        "ensureAssistantRow should create the live turn via appendThinking() when needed"
+    assert "assistantRow.className='assistant-segment';" in src or 'assistantRow.className = \'assistant-segment\';' in src, \
+        "live answer content should be appended as a segment inside the live turn wrapper"
+    assert "if(!force&&!assistantRow){" in src.replace(' ', ''), \
+        "ensureAssistantRow must still avoid creating the live answer segment when no display text exists yet"
+    assert "if(String((parsed&&parsed.displayText)||'').trim()||assistantRow) ensureAssistantRow();" in src, \
+        "token handler must only create the live answer segment once visible answer text starts"
+
+
+def test_messages_js_finalizes_thinking_card_before_tool_card(cleanup_test_sessions):
+    """R19e: later reasoning after a tool call must render in a fresh card."""
+    src = (REPO_ROOT / "static/messages.js").read_text()
+    assert "finalizeThinkingCard" in src, \
+        "tool handler must finalize the current live thinking card before appending a tool card"
+    assert "liveReasoningText='';" in src or 'liveReasoningText = "";' in src, \
+        "tool handler must reset the active reasoning segment before post-tool reasoning arrives"
 
 
 # ── R17: Stack traces must not leak to clients in 500 responses ────────────
@@ -658,22 +838,24 @@ def test_upload_error_has_no_trace_field():
 # ── #248: /skills slash command ───────────────────────────────────────────────
 
 def test_skills_slash_command_defined():
-    """#248: /skills command must be registered in COMMANDS and implemented.
-    Verifies the command entry, function definition, and i18n key are all present.
+    """#248: /skills slash command must be wired up.
+
+    Pre-Task 2 (slash-command-parity batch 1) this checked for the
+    hardcoded ``name:'skills'`` entry in the COMMANDS array. The COMMANDS
+    array is now sourced from hermes-agent's ``COMMAND_REGISTRY`` at boot
+    via ``GET /api/commands``, so the literal string is gone. The handler
+    must still exist and be registered, otherwise ``/skills`` would fall
+    through to \"not yet supported\".
     """
     src = (REPO_ROOT / "static/commands.js").read_text()
 
-    # 1. 'skills' must appear in the COMMANDS array definition
-    assert "name:'skills'" in src or 'name:"skills"' in src, \
-        "COMMANDS array must include an entry with name:'skills'"
+    # 1. cmdSkills function must be defined
+    assert "async function cmdSkills" in src or "function cmdSkills" in src, \
+        "cmdSkills function missing from commands.js"
 
-    # 2. cmdSkills function must be defined
-    assert "function cmdSkills" in src, \
-        "cmdSkills function must be defined in commands.js"
-
-    # 3. i18n key cmd_skills must be referenced (wired to COMMANDS entry)
-    assert "cmd_skills" in src, \
-        "cmd_skills i18n key must be referenced in commands.js"
+    # 2. HANDLERS.skills must be registered to dispatch /skills to cmdSkills
+    assert "HANDLERS.skills" in src, \
+        "HANDLERS.skills registration missing from commands.js"
 
 
 def test_reload_recovery_persists_durable_inflight_state(cleanup_test_sessions):
@@ -695,3 +877,100 @@ def test_reload_recovery_persists_durable_inflight_state(cleanup_test_sessions):
         "messages.js must clear durable inflight snapshots when the run ends/errors/cancels"
     assert "const stored=loadInflightState(sid, activeStreamId);" in sessions_src, \
         "loadSession() must hydrate in-flight state from durable browser storage on reload"
+
+
+# ── R18: OAuth onboarding must recognize credential_pool-only auth ───────────
+
+def test_provider_oauth_authenticated_accepts_credential_pool_entries(
+    cleanup_test_sessions, tmp_path
+):
+    """R18a: pool-only OAuth auth.json should count as authenticated.
+
+    Hermes runtime resolves Codex credentials from credential_pool; onboarding
+    must not insist on stale or duplicated providers[provider_id] entries.
+    """
+    _make_auth_json_with_credential_pool(
+        "openai-codex",
+        [
+            {
+                "id": "pool1",
+                "label": "device_code",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "***",
+                "refresh_token": "***",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        ],
+        tmp_path,
+    )
+
+    from api.onboarding import _provider_oauth_authenticated
+
+    assert _provider_oauth_authenticated("openai-codex", tmp_path) is True
+
+
+def test_provider_oauth_authenticated_rejects_flag_only_credential_pool_entries(
+    cleanup_test_sessions, tmp_path
+):
+    """R18a2: metadata flags alone must not count as usable OAuth auth."""
+    _make_auth_json_with_credential_pool(
+        "openai-codex",
+        [
+            {
+                "id": "pool1",
+                "label": "device_code",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "has_access_token": True,
+                "has_refresh_token": True,
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        ],
+        tmp_path,
+    )
+
+    from api.onboarding import _provider_oauth_authenticated
+
+    assert _provider_oauth_authenticated("openai-codex", tmp_path) is False
+
+
+def test_status_from_runtime_marks_openai_codex_ready_from_credential_pool(
+    cleanup_test_sessions, tmp_path
+):
+    """R18b: provider_ready should be true when auth lives only in credential_pool."""
+    _make_auth_json_with_credential_pool(
+        "openai-codex",
+        [
+            {
+                "id": "pool1",
+                "label": "device_code",
+                "source": "device_code",
+                "auth_type": "oauth",
+                "access_token": "***",
+                "refresh_token": "***",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        ],
+        tmp_path,
+    )
+
+    from api.onboarding import _status_from_runtime
+    import api.onboarding as _ob
+
+    orig_home = _ob._get_active_hermes_home
+    orig_found = _ob._HERMES_FOUND
+    _ob._get_active_hermes_home = lambda: tmp_path
+    _ob._HERMES_FOUND = True
+    try:
+        result = _status_from_runtime(
+            {"model": {"provider": "openai-codex", "default": "codex-mini-latest"}},
+            True,
+        )
+    finally:
+        _ob._get_active_hermes_home = orig_home
+        _ob._HERMES_FOUND = orig_found
+
+    assert result["provider_configured"] is True
+    assert result["provider_ready"] is True
+    assert result["setup_state"] == "ready"

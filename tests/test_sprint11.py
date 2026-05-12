@@ -59,10 +59,15 @@ def test_models_model_structure():
             assert len(model['label']) > 0
 
 def test_models_default_model_not_empty():
-    """Default model should be a non-empty string."""
+    """When HERMES_WEBUI_DEFAULT_MODEL env var is set (as in conftest), the
+    /api/models response includes a non-empty default_model string."""
     d, _ = get("/api/models")
     assert isinstance(d['default_model'], str)
-    assert len(d['default_model']) > 0
+    # conftest sets HERMES_WEBUI_DEFAULT_MODEL to "openai/gpt-5.4-mini", so
+    # this value should be non-empty in the test environment.
+    # When no env var is set (production with empty default), default_model
+    # can be "" — that is intentional (see PR #649).
+    assert len(d['default_model']) > 0  # only holds because conftest sets the env var
 
 def test_models_at_least_one_provider():
     """At least one provider group should exist (fallback list at minimum)."""
