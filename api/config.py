@@ -289,7 +289,12 @@ def get_webui_session_save_mode(config_data: dict | None = None) -> str:
 
 
 def reload_config() -> None:
-    """Reload config.yaml from the active profile's directory."""
+    """Reload config.yaml from the active profile's directory.
+
+    Supports ``config_fallback`` key: if the local config.yaml contains a
+    ``config_fallback: /path/to/other/config.yaml`` entry, that fallback file
+    is loaded first (read-only) and then the local config is layered on top.
+    """
     global _cfg_mtime, _cfg_path, _cfg_fingerprint
     with _cfg_lock:
         _cfg_cache.clear()
@@ -302,14 +307,45 @@ def reload_config() -> None:
         try:
             import yaml as _yaml
 
+            loaded = {}
             if config_path.exists():
                 loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    _cfg_cache.update(loaded)
+                if not isinstance(loaded, dict):
+                    loaded = {}
+
+            # ── Load fallback first (read-only, never written) ──
+            fallback_path_str = loaded.get('config_fallback')
+            if not fallback_path_str:
+                # If the profile config doesn't exist or has no config_fallback,
+                # inherit the base instance config so per-user profiles automatically
+                # get model/provider/toolset settings from the instance default.
+                try:
+                    from api.profiles import get_active_hermes_home, _DEFAULT_HERMES_HOME
+                    if get_active_hermes_home() != _DEFAULT_HERMES_HOME:
+                        base_cfg_path = _DEFAULT_HERMES_HOME / 'config.yaml'
+                        if base_cfg_path.exists() and base_cfg_path != config_path:
+                            fallback_path_str = str(base_cfg_path)
+                except Exception:
+                    pass
+            if fallback_path_str:
+                fb_path = Path(fallback_path_str).expanduser().resolve()
+                if fb_path.exists():
                     try:
-                        _cfg_mtime = Path(config_path).stat().st_mtime
-                    except OSError:
-                        _cfg_mtime = 0.0
+                        fb_data = _yaml.safe_load(fb_path.read_text(encoding="utf-8"))
+                        if isinstance(fb_data, dict):
+                            _cfg_cache.update(fb_data)
+                            logger.debug("Loaded config fallback from %s", fb_path)
+                    except Exception as e:
+                        logger.debug("Failed to load config fallback %s: %s", fb_path, e)
+                else:
+                    logger.debug("config_fallback %s does not exist, skipping", fb_path)
+
+            # ── Layer local config on top ──
+            _cfg_cache.update(loaded)
+            try:
+                _cfg_mtime = Path(config_path).stat().st_mtime
+            except OSError:
+                _cfg_mtime = 0.0
         except Exception:
             logger.debug("Failed to load yaml config from %s", config_path)
         _cfg_fingerprint = _fingerprint_config(_cfg_cache)
@@ -4134,3 +4170,101 @@ try:
     init_profile_state()
 except ImportError:
     pass  # hermes_cli not available -- default profile only
+
+
+# ── Multi-user configuration (config.yaml webui_users) ──────────────────────
+#
+# When config.yaml contains a `webui_users` list, the login page switches to
+# a username+password form.  Each user is bound to a profile, giving
+# per-user isolation of memory, sessions, skills, cron, and workspace.
+#
+# Config format:
+#   webui_users:
+#     - username: alice
+#       password_hash: <pbkdf2-hex>    # or plaintext `password` (auto-upgraded)
+#       profile: alice                  # profile to switch into (default=username)
+#       workspace: /home/alice/workspace
+#     - username: bob
+#       ...
+#
+# If `webui_users` is absent/empty, the server falls back to the existing
+# single-password mode (HERMES_WEBUI_PASSWORD / settings.json).
+
+_USERS_CACHE = None
+_USERS_LOCK = threading.Lock()
+_USERS_PERSISTED = STATE_DIR / 'webui_users.json'
+_users_cfg_mtime = 0.0  # config.yaml mtime at last successful load
+
+
+def load_webui_users() -> list:
+    """Return the list of user dicts from config.yaml.
+
+    Priority:
+      1. config.yaml ``webui_users`` key (authoritative source of truth)
+      2. Persisted ``webui_users.json`` (fallback: cached hashes from upgrades)
+      3. Empty list → single-password mode
+
+    Automatically invalidates cache when config.yaml changes on disk.
+    """
+    global _USERS_CACHE, _users_cfg_mtime
+    with _USERS_LOCK:
+        # Re-check config.yaml mtime — reload if it changed.
+        try:
+            cp = _get_config_path()
+            if cp and cp.exists():
+                cur_mtime = cp.stat().st_mtime
+                if cur_mtime != _users_cfg_mtime:
+                    _USERS_CACHE = None
+                    _users_cfg_mtime = cur_mtime
+        except Exception:
+            pass
+
+        if _USERS_CACHE is not None:
+            return _USERS_CACHE
+
+        result: list = []
+
+        # 1. config.yaml — get_config() itself has its own mtime guard, so
+        #    we always read fresh data from the latest config.
+        cfg_users = get_config().get('webui_users')
+        if cfg_users and isinstance(cfg_users, list):
+            result = cfg_users
+
+        # 2. Persisted file (used when config.yaml has no webui_users but
+        #    we previously upgraded plaintext passwords → hashes)
+        if not result and _USERS_PERSISTED.exists():
+            try:
+                data = json.loads(_USERS_PERSISTED.read_text(encoding='utf-8'))
+                if isinstance(data, list):
+                    result = data
+            except Exception:
+                pass
+
+        _USERS_CACHE = result
+        return result
+
+
+def _save_webui_users(users: list) -> None:
+    """Persist the users list (used for hash upgrades)."""
+    try:
+        _USERS_PERSISTED.parent.mkdir(parents=True, exist_ok=True)
+        _USERS_PERSISTED.write_text(
+            json.dumps(users, ensure_ascii=False, indent=2), encoding='utf-8'
+        )
+    except Exception:
+        logger.debug("Failed to persist webui_users")
+    global _USERS_CACHE
+    with _USERS_LOCK:
+        _USERS_CACHE = users
+
+
+def invalidate_webui_users_cache() -> None:
+    """Force reload of webui_users on next call."""
+    global _USERS_CACHE
+    with _USERS_LOCK:
+        _USERS_CACHE = None
+
+
+def is_multi_user_mode() -> bool:
+    """True if config.yaml defines ``webui_users`` with at least one entry."""
+    return len(load_webui_users()) > 0

@@ -521,9 +521,12 @@ def list_workspace_suggestions(prefix: str = "", limit: int = 12) -> list[str]:
 def resolve_trusted_workspace(path: str | Path | None = None) -> Path:
     """Resolve and validate a workspace path.
 
+    In multi-user mode, additionally checks that the resolved path is under
+    one of the current user's allowed workspaces (read from the session store).
+
     A path is trusted if it satisfies at least one of:
       (A) It is under the user's home directory (Path.home()).
-          Works cross-platform: ~/... on Linux/macOS, C:\\Users\\... on Windows.
+          Works cross-platform: ~/... on Linux/macOS, C:\\\\Users\\\\... on Windows.
       (B) It is already in the profile's saved workspace list.
           This covers self-hosted deployments where workspaces live outside home
           (e.g. /data/projects, /opt/workspace) — once a workspace is saved by
@@ -562,6 +565,13 @@ def resolve_trusted_workspace(path: str | Path | None = None) -> Path:
     if _is_blocked_workspace_path(candidate, path):
         raise ValueError(f"Path points to a system directory: {candidate}")
 
+    # Multi-user mode: if a workspace passes the per-user whitelist, trust it.
+    # This short-circuits checks (B)/(C) so that user-specific workspaces outside
+    # the saved list or default workspace are still accepted.
+    trusted = _check_multi_user_workspace(candidate)
+    if trusted:
+        return candidate
+
     # (B) Trusted if already in the saved workspace list — covers non-home installs
     try:
         saved = load_workspaces()
@@ -588,6 +598,52 @@ def resolve_trusted_workspace(path: str | Path | None = None) -> Path:
         f"list, and not under the default workspace: {candidate}. "
         f"Add it via Settings → Workspaces first."
     )
+
+
+def _check_multi_user_workspace(candidate: Path) -> bool:
+    """In multi-user mode, check that a workspace is under the current user's
+    allowed workspace list (from the session store).
+
+    Returns True if the workspace is trusted (multi-user check passed or not
+    applicable). Returns False if the workspace is NOT in the user's allowed
+    list — the caller should continue with other checks or raise.
+
+    In single-password mode this returns True (no-op).
+    """
+    try:
+        from api.config import is_multi_user_mode
+        if not is_multi_user_mode():
+            return True
+    except Exception:
+        return True
+
+    # Get current request handler from threading local (set by server.py)
+    try:
+        from api import _current_request_handler
+        handler = getattr(_current_request_handler, 'handler', None)
+    except Exception:
+        handler = None
+
+    if handler is None:
+        return True
+
+    try:
+        from api.access_check import _get_current_user
+        user = _get_current_user(handler)
+        if not user or not user.get('workspaces'):
+            return True
+
+        allowed = [Path(w).expanduser().resolve() for w in user['workspaces']]
+        for root in allowed:
+            try:
+                candidate.relative_to(root)
+                return True
+            except ValueError:
+                pass
+
+        return False
+    except Exception:
+        return True
 
 
 

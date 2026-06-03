@@ -51,16 +51,33 @@ PUBLIC_PATHS = frozenset({
     '/manifest.json', '/manifest.webmanifest',
 })
 
-COOKIE_NAME = 'hermes_session'
+# Cookie names are scoped per-instance using the first 4 hex chars of
+# MD5(STATE_DIR). This guarantees that two WebUI instances served from the
+# same hostname (e.g. 8082 and 8789) never fight over the same cookie —
+# each instance writes its own cookie bucket in the browser.
+def _resolve_cookie_name(name_suffix: str = '') -> str:
+    """Return an instance-scoped cookie name so multi-instance setups don't clash."""
+    import hashlib
+    from api.config import STATE_DIR
+    prefix = hashlib.md5(str(STATE_DIR).encode()).hexdigest()[:4]
+    base = f'hermes_{prefix}'
+    if name_suffix:
+        base += f'_{name_suffix}'
+    return base
+
+
+COOKIE_NAME = _resolve_cookie_name('session')
+PROFILE_COOKIE_NAME = _resolve_cookie_name('profile')
 
 _SESSIONS_FILE = STATE_DIR / '.sessions.json'
 
 
-def _load_sessions() -> dict[str, float]:
+def _load_sessions() -> dict[str, dict | float]:
     """Load persisted sessions from STATE_DIR, pruning expired entries.
 
-    Returns an empty dict on any read or parse error so startup is never
-    blocked by a corrupt or missing sessions file.
+    Supports both the old format (token -> expiry float) and the new format
+    (token -> {"exp": float, "username": str, ...}). Old entries are preserved
+    as-is; new multi-user sessions carry rich metadata.
     """
     try:
         if _SESSIONS_FILE.exists():
@@ -68,14 +85,24 @@ def _load_sessions() -> dict[str, float]:
             if not isinstance(data, dict):
                 raise ValueError('malformed sessions file — expected dict')
             now = time.time()
-            return {t: exp for t, exp in data.items()
-                    if isinstance(t, str) and isinstance(exp, (int, float)) and exp > now}
+            result = {}
+            for t, v in data.items():
+                if not isinstance(t, str):
+                    continue
+                if isinstance(v, (int, float)) and v > now:
+                    # Old format — keep as-is
+                    result[t] = v
+                elif isinstance(v, dict):
+                    exp = v.get('exp')
+                    if isinstance(exp, (int, float)) and exp > now:
+                        result[t] = v
+            return result
     except Exception as e:
         logger.debug("Failed to load sessions file, starting fresh: %s", e)
     return {}
 
 
-def _save_sessions(sessions: dict[str, float]) -> None:
+def _save_sessions(sessions: dict[str, dict | float]) -> None:
     """Atomically persist sessions to STATE_DIR/.sessions.json (0600).
 
     Uses a temp file + os.replace() so a crash mid-write never leaves a
@@ -221,8 +248,16 @@ def get_password_hash() -> str | None:
 
 
 def is_auth_enabled() -> bool:
-    """True if a password is configured (env var or settings)."""
-    return get_password_hash() is not None
+    """True if a password is configured (env var or settings) or multi-user mode is active."""
+    if get_password_hash() is not None:
+        return True
+    try:
+        from api.config import is_multi_user_mode
+        if is_multi_user_mode():
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def verify_password(plain) -> bool:
@@ -231,6 +266,99 @@ def verify_password(plain) -> bool:
     if not expected:
         return False
     return hmac.compare_digest(_hash_password(plain), expected)
+
+
+# ── Multi-user authentication ────────────────────────────────────────────────
+
+
+def _hash_user_password(username: str, password: str) -> str:
+    """PBKDF2 hash that includes the username as an additional salt component.
+
+    This prevents hash collisions between users who happen to share a password.
+    """
+    salt = _signing_key()
+    dk = hashlib.pbkdf2_hmac(
+        'sha256',
+        f'{username}:{password}'.encode(),
+        salt,
+        600_000,
+    )
+    return dk.hex()
+
+
+def find_user(username: str) -> dict | None:
+    """Look up a user entry from the configured webui_users list.
+
+    Returns None if not found or any error occurs during loading.
+    Username matching is case-insensitive.
+    """
+    try:
+        from api.config import load_webui_users
+        for u in load_webui_users():
+            if u.get('username', '').lower() == username.lower():
+                return u
+    except Exception:
+        pass
+    return None
+
+
+def verify_multi_user_login(username: str, password: str) -> dict | None:
+    """Authenticate a multi-user login attempt.
+
+    Returns a dict with ``username``, ``profile``, ``workspace`` on success,
+    or ``None`` on failure (wrong credentials or user not found).
+
+    On first login with a plaintext ``password`` field the hash is
+    computed and persisted so subsequent comparisons are fast and salted.
+    """
+    user = find_user(username)
+    if user is None:
+        return None
+
+    # Prefer stored hash
+    stored_hash = user.get('password_hash')
+    if stored_hash:
+        if not hmac.compare_digest(_hash_user_password(username, password), stored_hash):
+            return None
+    else:
+        # Plaintext in config.yaml — compare and upgrade
+        raw_pw = user.get('password', '')
+        if not raw_pw or password != raw_pw:
+            return None
+        # Upgrade: compute hash and persist back
+        new_hash = _hash_user_password(username, password)
+        user['password_hash'] = new_hash
+        user.pop('password', None)
+        try:
+            from api.config import load_webui_users, _save_webui_users
+            all_users = load_webui_users()
+            for u in all_users:
+                if u.get('username', '').lower() == username.lower():
+                    u['password_hash'] = new_hash
+                    u.pop('password', None)
+                    break
+            _save_webui_users(all_users)
+        except Exception:
+            logger.debug("Failed to persist upgraded password hash for %s", username)
+
+    return {
+        'username': username,
+        'profile': user.get('profile', username),
+        'workspace': user.get('workspace'),
+        'workspaces': user.get('workspaces', []),
+    }
+
+
+def set_multi_user_cookie(handler, cookie_value: str, profile_name: str) -> None:
+    """Set both the auth session cookie and the profile cookie.
+
+    The profile cookie tells every subsequent request which profile (and
+    therefore which HERMES_HOME sub-directory) to use, giving per-user
+    isolation of memory, sessions, skills, cron, and workspace.
+    """
+    set_auth_cookie(handler, cookie_value)
+    from api.helpers import build_profile_cookie
+    handler.send_header('Set-Cookie', build_profile_cookie(profile_name))
 
 
 def create_session() -> str:
@@ -242,10 +370,101 @@ def create_session() -> str:
     return f"{token}.{sig}"
 
 
+def create_session_with_user_info(
+    *,
+    username: str,
+    profile: str,
+    workspaces: list[str],
+) -> str:
+    """Create a multi-user auth session with user metadata.
+
+    Returns signed cookie value.  The session store carries the username,
+    profile, and workspace list so subsequent requests can derive the
+    current user without a second config lookup.
+
+    Persists the session both globally and in a per-user file so that
+    sessions are scoped per-instance (via COOKIE_NAME which already uses
+    MD5(STATE_DIR)) and per-user (via per-user session files).
+    """
+    token = secrets.token_hex(32)
+    session_data = {
+        'exp': time.time() + _resolve_session_ttl(),
+        'username': username,
+        'profile': profile,
+        'workspaces': workspaces,
+    }
+    _sessions[token] = session_data
+    _save_sessions(_sessions)
+    # Also persist in per-user session file for user-scoped isolation
+    try:
+        _user_sessions_dir = STATE_DIR / '.user_sessions'
+        _user_sessions_dir.mkdir(exist_ok=True)
+        user_file = _user_sessions_dir / f'{username}.json'
+        user_sessions = {}
+        try:
+            if user_file.exists():
+                user_sessions = json.loads(user_file.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+        user_sessions[token] = session_data
+        fd, tmp = tempfile.mkstemp(dir=_user_sessions_dir, suffix='.tmp')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(user_sessions, f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, user_file)
+    except Exception as e:
+        logger.debug("Failed to persist per-user session for %s: %s", username, e)
+    sig = hmac.new(_signing_key(), token.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{token}.{sig}"
+
+
+def get_session_user_info(cookie_value: str | None) -> dict | None:
+    """Return the user metadata attached to a session cookie, or None.
+
+    Returns ``None`` if the cookie is missing, invalid, expired, or from a
+    single-password session that carries no user metadata.
+    """
+    if not cookie_value or '.' not in cookie_value:
+        return None
+    token, sig = cookie_value.rsplit('.', 1)
+    expected_sig = hmac.new(_signing_key(), token.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+    entry = _sessions.get(token)
+    if entry is None:
+        return None
+    # Handle old format (token -> float) — no metadata
+    if isinstance(entry, (int, float)):
+        return None
+    if isinstance(entry, dict):
+        exp = entry.get('exp')
+        if exp is None or time.time() > exp:
+            _sessions.pop(token, None)
+            return None
+        return {
+            'username': entry.get('username'),
+            'profile': entry.get('profile'),
+            'workspaces': entry.get('workspaces', []),
+        }
+    return None
+
+
+def _get_session_expiry(token: str) -> float | None:
+    """Extract expiry timestamp from a session entry (handles old/new format)."""
+    v = _sessions.get(token)
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, dict):
+        return v.get('exp')
+    return None
+
+
 def _prune_expired_sessions():
     """Remove all expired session entries to prevent unbounded memory growth."""
     now = time.time()
-    expired = [t for t, exp in _sessions.items() if now > exp]
+    expired = [t for t in _sessions if now > _get_session_expiry(t)]
     if expired:
         for token in expired:
             _sessions.pop(token, None)
@@ -261,7 +480,7 @@ def verify_session(cookie_value) -> bool:
     expected_sig = hmac.new(_signing_key(), token.encode(), hashlib.sha256).hexdigest()[:32]
     if not hmac.compare_digest(sig, expected_sig):
         return False
-    expiry = _sessions.get(token)
+    expiry = _get_session_expiry(token)
     if not expiry or time.time() > expiry:
         _sessions.pop(token, None)
         return False

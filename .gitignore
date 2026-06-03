@@ -59,3 +59,8 @@ graphify-out/
 .graphify_uncached.txt
 
 .venv/
+
+# Workspaces (user data, not code)
+workspace_*/
+.hermes_test/
+.webui_state/

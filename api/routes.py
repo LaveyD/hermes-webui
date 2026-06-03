@@ -828,7 +828,9 @@ from api.helpers import (
     _sanitize_error,
     redact_session_data,
     _redact_text,
+    get_profile_cookie,
 )
+from api.access_check import safe_resolve_with_auth
 from api.agent_health import build_agent_health_payload
 from api.request_diagnostics import RequestDiagnostics
 from api.system_health import build_system_health_payload
@@ -1953,21 +1955,123 @@ _LOGIN_LOCALE = {
     },
     "zh": {
         "lang": "zh-CN",
-        "title": "\u767b\u5f55",
-        "subtitle": "\u8f93\u5165\u5bc6\u7801\u7ee7\u7eed\u4f7f\u7528",
-        "placeholder": "\u5bc6\u7801",
-        "btn": "\u767b\u5f55",
-        "invalid_pw": "\u5bc6\u7801\u9519\u8bef",
-        "conn_failed": "\u8fde\u63a5\u5931\u8d25",
+        "title": "登录",
+        "subtitle": "输入用户名和密码继续使用",
+        "placeholder": "密码",
+        "username_placeholder": "用户名",
+        "password_placeholder": "密码",
+        "btn": "登录",
+        "invalid_pw": "密码错误",
+        "invalid_up": "用户名或密码错误",
+        "conn_failed": "连接失败",
     },
     "zh-Hant": {
         "lang": "zh-TW",
-        "title": "\u767b\u5f55",
-        "subtitle": "\u8f38\u5165\u5bc6\u78bc\u7e7c\u7e8c\u4f7f\u7528",
-        "placeholder": "\u5bc6\u78bc",
-        "btn": "\u767b\u5f55",
-        "invalid_pw": "\u5bc6\u78bc\u932f\u8aa4",
-        "conn_failed": "\u9023\u63a5\u5931\u6557",
+        "title": "登录",
+        "subtitle": "輸入使用者名稱和密碼繼續使用",
+        "placeholder": "密碼",
+        "username_placeholder": "使用者名稱",
+        "password_placeholder": "密碼",
+        "btn": "登录",
+        "invalid_pw": "密碼錯誤",
+        "invalid_up": "使用者名稱或密碼錯誤",
+        "conn_failed": "連線失敗",
+    },
+    "en": {
+        "lang": "en",
+        "title": "Sign in",
+        "subtitle": "Enter your username and password to continue",
+        "placeholder": "Password",
+        "username_placeholder": "Username",
+        "password_placeholder": "Password",
+        "btn": "Sign in",
+        "invalid_pw": "Invalid password",
+        "invalid_up": "Invalid username or password",
+        "conn_failed": "Connection failed",
+    },
+    "es": {
+        "lang": "es-ES",
+        "title": "Iniciar sesión",
+        "subtitle": "Introduce tu usuario y contraseña para continuar",
+        "placeholder": "Contraseña",
+        "username_placeholder": "Usuario",
+        "password_placeholder": "Contraseña",
+        "btn": "Entrar",
+        "invalid_pw": "Contraseña inválida",
+        "invalid_up": "Usuario o contraseña inválidos",
+        "conn_failed": "Error de conexión",
+    },
+    "de": {
+        "lang": "de-DE",
+        "title": "Anmelden",
+        "subtitle": "Geben Sie Benutzername und Passwort ein",
+        "placeholder": "Passwort",
+        "username_placeholder": "Benutzername",
+        "password_placeholder": "Passwort",
+        "btn": "Anmelden",
+        "invalid_pw": "Ungültiges Passwort",
+        "invalid_up": "Ungültiger Benutzername oder Passwort",
+        "conn_failed": "Verbindung fehlgeschlagen",
+    },
+    "ru": {
+        "lang": "ru-RU",
+        "title": "Войти",
+        "subtitle": "Введите имя пользователя и пароль",
+        "placeholder": "Пароль",
+        "username_placeholder": "Имя пользователя",
+        "password_placeholder": "Пароль",
+        "btn": "Войти",
+        "invalid_pw": "Неверный пароль",
+        "invalid_up": "Неверное имя пользователя или пароль",
+        "conn_failed": "Не удалось подключиться",
+    },
+    "ja": {
+        "lang": "ja-JP",
+        "title": "サインイン",
+        "subtitle": "ユーザー名とパスワードを入力して続行",
+        "placeholder": "パスワード",
+        "username_placeholder": "ユーザー名",
+        "password_placeholder": "パスワード",
+        "btn": "サインイン",
+        "invalid_pw": "パスワードが無効です",
+        "invalid_up": "ユーザー名またはパスワードが無効です",
+        "conn_failed": "接続失敗",
+    },
+    "ko": {
+        "lang": "ko-KR",
+        "title": "로그인",
+        "subtitle": "계속하려면 사용자 이름과 비밀번호를 입력하세요",
+        "placeholder": "비밀번호",
+        "username_placeholder": "사용자 이름",
+        "password_placeholder": "비밀번호",
+        "btn": "로그인",
+        "invalid_pw": "비밀번호가 올바르지 않습니다",
+        "invalid_up": "사용자 이름 또는 비밀번호가 올바르지 않습니다",
+        "conn_failed": "연결 실패",
+    },
+    "pt": {
+        "lang": "pt-BR",
+        "title": "Entrar",
+        "subtitle": "Digite seu nome de usuário e senha para continuar",
+        "placeholder": "Senha",
+        "username_placeholder": "Nome de usuário",
+        "password_placeholder": "Senha",
+        "btn": "Entrar",
+        "invalid_pw": "Senha inválida",
+        "invalid_up": "Nome de usuário ou senha inválidos",
+        "conn_failed": "Falha na conexão",
+    },
+    "it": {
+        "lang": "it-IT",
+        "title": "Accedi",
+        "subtitle": "Inserisci nome utente e password per continuare",
+        "placeholder": "Password",
+        "username_placeholder": "Nome utente",
+        "password_placeholder": "Password",
+        "btn": "Accedi",
+        "invalid_pw": "Password non valida",
+        "invalid_up": "Nome utente o password non validi",
+        "conn_failed": "Connessione fallita",
     },
     # Strings mirror static/i18n.js login_* keys for the corresponding locale.
     # See issue #1442. When adding a new locale to LOCALES in i18n.js, also add
@@ -2043,7 +2147,8 @@ def _resolve_login_locale_key(raw_lang: str | None) -> str:
     return "en"
 
 # ── Login page (self-contained, no external deps) ────────────────────────────
-_LOGIN_PAGE_HTML = """<!doctype html>
+# Single-password mode template
+_LOGIN_PAGE_HTML_SINGLE = """<!doctype html>
 <html lang="{{LANG}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{BOT_NAME}} — {{LOGIN_TITLE}}</title>
 <style>
@@ -2080,6 +2185,49 @@ button:hover{background:rgba(124,185,255,.25)}
 <!-- Keep login.js relative so subpath mounts load it under the current scope. -->
 <script src="static/login.js?v={{WEBUI_VERSION}}"></script>
 </body></html>"""
+
+# Multi-user mode template (username + password)
+_LOGIN_PAGE_HTML_MULTI = """<!doctype html>
+<html lang="{{LANG}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{BOT_NAME}} — {{LOGIN_TITLE}}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#1a1a2e;color:#e8e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#16213e;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:36px 32px;
+  width:320px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.logo{width:48px;height:48px;border-radius:12px;background:linear-gradient(145deg,#e8a030,#e94560);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;color:#fff;
+  margin:0 auto 12px;box-shadow:0 2px 12px rgba(233,69,96,.3)}
+h1{font-size:18px;font-weight:600;margin-bottom:4px}
+.sub{font-size:12px;color:#8888aa;margin-bottom:24px}
+input{width:100%;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.04);color:#e8e8f0;font-size:14px;outline:none;margin-bottom:14px;
+  transition:border-color .15s}
+input:focus{border-color:rgba(124,185,255,.5);box-shadow:0 0 0 3px rgba(124,185,255,.1)}
+button{width:100%;padding:10px;border-radius:10px;border:none;background:rgba(124,185,255,.15);
+  border:1px solid rgba(124,185,255,.3);color:#7cb9ff;font-size:14px;font-weight:600;cursor:pointer;
+  transition:all .15s}
+button:hover{background:rgba(124,185,255,.25)}
+.err{color:#e94560;font-size:12px;margin-top:10px;display:none}
+</style></head><body>
+<div class="card">
+  <div class="logo">{{BOT_NAME_INITIAL}}</div>
+  <h1>{{BOT_NAME}}</h1>
+  <p class="sub">{{LOGIN_SUBTITLE}}</p>
+  <form id="login-form" data-invalid="{{LOGIN_INVALID_UP}}" data-conn-failed="{{LOGIN_CONN_FAILED}}">
+    <input type="text" id="user" placeholder="{{USERNAME_PLACEHOLDER}}" autocomplete="username">
+    <input type="password" id="pw" placeholder="{{PASSWORD_PLACEHOLDER}}" autocomplete="current-password">
+    <button type="submit">{{LOGIN_BTN}}</button>
+  </form>
+  <div class="err" id="err"></div>
+</div>
+<!-- Keep login.js relative so subpath mounts load it under the current scope. -->
+<script src="static/login.js?v={{WEBUI_VERSION}}"></script>
+</body></html>"""
+
+# Backward-compat alias — existing references to _LOGIN_PAGE_HTML use the single-password template
+_LOGIN_PAGE_HTML = _LOGIN_PAGE_HTML_SINGLE
 
 
 # ── Logs endpoint ─────────────────────────────────────────────────────────────
@@ -2873,32 +3021,91 @@ def handle_get(handler, parsed) -> bool:
         from urllib.parse import quote
         from api.updates import WEBUI_VERSION
         version_token = quote(WEBUI_VERSION, safe="")
-        _page = (
-            _LOGIN_PAGE_HTML.replace("{{BOT_NAME}}", _bn)
-            .replace("{{BOT_NAME_INITIAL}}", _bn[0].upper())
-            .replace("{{WEBUI_VERSION}}", version_token)
-            .replace("{{LANG}}", _html.escape(_login_strings["lang"]))
-            .replace("{{LOGIN_TITLE}}", _html.escape(_login_strings["title"]))
-            .replace("{{LOGIN_SUBTITLE}}", _html.escape(_login_strings["subtitle"]))
-            .replace(
-                "{{LOGIN_PLACEHOLDER}}", _html.escape(_login_strings["placeholder"])
+
+        # ── Determine mode: multi-user or single-password ──
+        try:
+            from api.config import is_multi_user_mode
+            _multi = is_multi_user_mode()
+        except Exception:
+            _multi = False
+
+        if _multi:
+            _page = (
+                _LOGIN_PAGE_HTML_MULTI.replace("{{BOT_NAME}}", _bn)
+                .replace("{{BOT_NAME_INITIAL}}", "YML")
+                .replace("{{WEBUI_VERSION}}", version_token)
+                .replace("{{LANG}}", _html.escape(_login_strings["lang"]))
+                .replace("{{LOGIN_TITLE}}", _html.escape(_login_strings["title"]))
+                .replace("{{LOGIN_SUBTITLE}}", _html.escape(_login_strings["subtitle"]))
+                .replace(
+                    "{{USERNAME_PLACEHOLDER}}",
+                    _html.escape(_login_strings.get("username_placeholder", "Username")),
+                )
+                .replace(
+                    "{{PASSWORD_PLACEHOLDER}}",
+                    _html.escape(_login_strings.get("password_placeholder", "Password")),
+                )
+                .replace("{{LOGIN_BTN}}", _html.escape(_login_strings["btn"]))
+                .replace(
+                    "{{LOGIN_INVALID_UP}}",
+                    _html.escape(_login_strings.get("invalid_up", "Invalid username or password")),
+                )
+                .replace(
+                    "{{LOGIN_CONN_FAILED}}",
+                    _html.escape(_login_strings["conn_failed"]),
+                )
             )
-            .replace("{{LOGIN_BTN}}", _html.escape(_login_strings["btn"]))
-            .replace("{{LOGIN_INVALID_PW}}", _html.escape(_login_strings["invalid_pw"]))
-            .replace(
-                "{{LOGIN_CONN_FAILED}}", _html.escape(_login_strings["conn_failed"])
+        else:
+            _page = (
+                _LOGIN_PAGE_HTML.replace("{{BOT_NAME}}", _bn)
+                .replace("{{BOT_NAME_INITIAL}}", "YML")
+                .replace("{{WEBUI_VERSION}}", version_token)
+                .replace("{{LANG}}", _html.escape(_login_strings["lang"]))
+                .replace("{{LOGIN_TITLE}}", _html.escape(_login_strings["title"]))
+                .replace("{{LOGIN_SUBTITLE}}", _html.escape(_login_strings["subtitle"]))
+                .replace(
+                    "{{LOGIN_PLACEHOLDER}}", _html.escape(_login_strings["placeholder"])
+                )
+                .replace("{{LOGIN_BTN}}", _html.escape(_login_strings["btn"]))
+                .replace("{{LOGIN_INVALID_PW}}", _html.escape(_login_strings["invalid_pw"]))
+                .replace(
+                    "{{LOGIN_CONN_FAILED}}", _html.escape(_login_strings["conn_failed"])
+                )
             )
-        )
         return t(handler, _page, content_type="text/html; charset=utf-8")
 
     if parsed.path == "/api/auth/status":
         from api.auth import is_auth_enabled, parse_cookie, verify_session
 
         logged_in = False
-        if is_auth_enabled():
+        auth_enabled = is_auth_enabled()
+        if auth_enabled:
             cv = parse_cookie(handler)
             logged_in = bool(cv and verify_session(cv))
-        return j(handler, {"auth_enabled": is_auth_enabled(), "logged_in": logged_in})
+
+        resp = {"auth_enabled": auth_enabled, "logged_in": logged_in}
+
+        # In multi-user mode, return the current profile and workspace
+        if logged_in:
+            profile = get_profile_cookie(handler)
+            if profile:
+                resp["profile"] = profile
+
+        # Return whether we're in multi-user mode (helps UI decide login form)
+        try:
+            from api.config import is_multi_user_mode
+            mu = is_multi_user_mode()
+            resp["multi_user"] = mu
+            # Also return the user's primary workspace so the UI displays correctly
+            if mu and logged_in:
+                from api.access_check import get_user_allowed_workspaces
+                _allowed = get_user_allowed_workspaces(handler)
+                if _allowed:
+                    resp["workspace"] = str(_allowed[0])
+        except Exception:
+            pass
+
+        return j(handler, resp)
 
     if parsed.path in ("/manifest.json", "/manifest.webmanifest"):
         static_root = Path(__file__).parent.parent / "static"
@@ -3019,6 +3226,17 @@ def handle_get(handler, parsed) -> bool:
         settings = load_settings()
         # Never expose the stored password hash to clients
         settings.pop("password_hash", None)
+        # In multi-user mode, override default_workspace to the user's primary
+        # workspace so the UI doesn't try to create sessions in a disallowed dir.
+        try:
+            from api.config import is_multi_user_mode
+            if is_multi_user_mode():
+                from api.access_check import get_user_allowed_workspaces
+                _allowed = get_user_allowed_workspaces(handler)
+                if _allowed:
+                    settings["default_workspace"] = str(_allowed[0])
+        except Exception:
+            pass
         # Surface env-var precedence so the UI can disable the password field
         # instead of silently no-oping the save (#1560). The setting takes
         # precedence in api.auth.get_password_hash(), but until now the UI
@@ -3061,6 +3279,17 @@ def handle_get(handler, parsed) -> bool:
         sid = query.get("session_id", [""])[0]
         if not sid:
             return j(handler, {"error": "session_id is required"}, status=400)
+        # Multi-user: check session ownership (enforced, no silent bypass)
+        try:
+            _sess_for_check = get_session(sid, metadata_only=True)
+            if _sess_for_check:
+                _sess_profile = getattr(_sess_for_check, 'profile', None) or ''
+                if not _check_session_ownership(handler, _sess_profile):
+                    return True  # 403 already sent by check_session_ownership
+        except Exception as e:
+            # Log but don't crash; if ownership check fails, deny access
+            logger.warning(f"Session ownership check error for {sid}: {e}")
+            return j(handler, {"error": "Access denied"}, status=403)
         # ?messages=0 skips the message payload for fast session switching.
         # The frontend uses this when switching conversations in the sidebar
         # (only needs metadata). The full message array is loaded lazily
@@ -3457,12 +3686,31 @@ def handle_get(handler, parsed) -> bool:
         })
 
     if parsed.path == "/api/session/export":
+        try:
+            _ex = get_session(body.get("session_id", ""), metadata_only=True)
+            if _ex and not _check_session_ownership(handler, _ex.get('profile', '')):
+                return bad(handler, "Access denied", 403)
+        except Exception:
+            pass
         return _handle_session_export(handler, parsed)
 
     if parsed.path == "/api/workspaces":
-        return j(
-            handler, {"workspaces": load_workspaces(), "last": get_last_workspace()}
-        )
+        ws_data = {"workspaces": load_workspaces(), "last": get_last_workspace()}
+        # In multi-user mode, return the user's allowed workspaces instead of
+        # the global shared list
+        try:
+            from api.config import is_multi_user_mode
+            if is_multi_user_mode():
+                from api.access_check import get_user_allowed_workspaces
+                _allowed = get_user_allowed_workspaces(handler)
+                if _allowed:
+                    ws_data["workspaces"] = [
+                        {"path": str(w), "name": w.name} for w in _allowed
+                    ]
+                    ws_data["last"] = str(_allowed[0])
+        except Exception:
+            pass
+        return j(handler, ws_data)
 
     if parsed.path == "/api/workspaces/suggest":
         qs = parse_qs(parsed.query)
@@ -3571,6 +3819,11 @@ def handle_get(handler, parsed) -> bool:
         return _handle_sse_stream(handler, parsed)
 
     if parsed.path == "/api/terminal/output":
+        try:
+            if _block_terminal(handler):
+                return True
+        except Exception:
+            pass
         return _handle_terminal_output(handler, parsed)
 
     if parsed.path == '/api/sessions/gateway/stream':
@@ -3799,6 +4052,14 @@ def handle_get(handler, parsed) -> bool:
 
     # ── Checkpoints / Rollback (GET) ──
     if parsed.path == "/api/rollback/list":
+        try:
+            _rb_ws = body.get("workspace", "")
+            if _rb_ws:
+                from api.access_check import check_workspace_access
+                if check_workspace_access(handler, _rb_ws) is None:
+                    return True
+        except Exception:
+            pass
         qs = parse_qs(parsed.query)
         workspace = qs.get("workspace", [""])[0]
         if not workspace:
@@ -3888,10 +4149,49 @@ def handle_post(handler, parsed) -> bool:
         return True
 
     if parsed.path == "/api/session/new":
+        # Multi-user: workspace in request must be allowed. If the client
+        # sends a workspace not in the user's allowed list (e.g. the
+        # default_workspace from settings), fall back to the user's primary
+        # workspace from their session metadata instead of rejecting with 403.
         try:
-            workspace = str(resolve_trusted_workspace(body.get("workspace"))) if body.get("workspace") else None
-        except (TypeError, ValueError) as e:
-            return bad(handler, str(e))
+            _new_ws = body.get("workspace", "")
+            if _new_ws:
+                from api.access_check import (
+                    get_user_allowed_workspaces,
+                    _is_workspace_allowed,
+                )
+                from pathlib import Path as _Path
+
+                _candidate = _Path(_new_ws).expanduser().resolve()
+                _allowed = get_user_allowed_workspaces(handler)
+                if _is_workspace_allowed(_candidate, _allowed):
+                    # Workspace is allowed — proceed normally
+                    try:
+                        workspace = str(resolve_trusted_workspace(_new_ws))
+                    except (TypeError, ValueError) as e:
+                        return bad(handler, str(e))
+                else:
+                    # Workspace denied — fall back to user's primary workspace
+                    from api.auth import parse_cookie, get_session_user_info
+                    _cookie = parse_cookie(handler)
+                    _info = get_session_user_info(_cookie) if _cookie else None
+                    if _info:
+                        _fallback_ws = (_info.get("workspaces") or [None])[0]
+                        if _fallback_ws:
+                            workspace = _fallback_ws
+                            logger.debug(
+                                "Session workspace denied %s, falling back to user workspace %s",
+                                _new_ws,
+                                workspace,
+                            )
+                        else:
+                            return bad(handler, "Workspace access denied", 403)
+                    else:
+                        return bad(handler, "Workspace access denied", 403)
+            else:
+                workspace = None
+        except Exception:
+            workspace = None
         worktree_info = None
         worktree_requested = (
             body.get("worktree") is True
@@ -4074,6 +4374,9 @@ def handle_post(handler, parsed) -> bool:
             s = get_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        # Multi-user: check session ownership
+        if not _check_session_ownership(handler, s.get('profile', '')):
+            return bad(handler, "Access denied", 403)
         with _get_session_agent_lock(body["session_id"]):
             s.title = str(body["title"]).strip()[:80] or "Untitled"
             s.save()
@@ -4125,6 +4428,12 @@ def handle_post(handler, parsed) -> bool:
         return j(handler, {"ok": True, "personality": s.personality, "prompt": prompt})
 
     if parsed.path == "/api/session/toolsets":
+        try:
+            _ts = get_session(body.get("session_id", ""), metadata_only=True)
+            if _ts and not _check_session_ownership(handler, _ts.get('profile', '')):
+                return bad(handler, "Access denied", 403)
+        except Exception:
+            pass
         """Set or clear per-session toolset override (#493).
 
         POST body: { session_id, toolsets: [...] | null }
@@ -4152,6 +4461,12 @@ def handle_post(handler, parsed) -> bool:
         return j(handler, {"ok": True, "enabled_toolsets": s.enabled_toolsets})
 
     if parsed.path == "/api/session/draft":
+        try:
+            _dr = get_session(body.get("session_id", ""), metadata_only=True)
+            if _dr and not _check_session_ownership(handler, _dr.get('profile', '')):
+                return bad(handler, "Access denied", 403)
+        except Exception:
+            pass
         # GET ?session_id=X  → return current draft
         # POST body          → save draft { session_id, text?, files? }
         # HTTP method is in handler.command (e.g. "POST", "GET"), parsed has no .method
@@ -4211,6 +4526,9 @@ def handle_post(handler, parsed) -> bool:
             s = get_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        # Multi-user: check session ownership
+        if not _check_session_ownership(handler, s.get('profile', '')):
+            return bad(handler, "Access denied", 403)
         old_ws = getattr(s, "workspace", "")
         try:
             new_ws = str(resolve_trusted_workspace(body.get("workspace", s.workspace)))
@@ -4241,6 +4559,13 @@ def handle_post(handler, parsed) -> bool:
         sid = body.get("session_id", "")
         if not sid:
             return bad(handler, "session_id is required")
+        # Multi-user: check session ownership
+        try:
+            _ds = get_session(sid, metadata_only=True)
+            if _ds and not _check_session_ownership(handler, _ds.get('profile', '')):
+                return bad(handler, "Access denied", 403)
+        except Exception:
+            pass
         if not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
             return bad(handler, "Invalid session_id", 400)
         cli_meta_for_delete = _lookup_cli_session_metadata(sid)
@@ -4297,6 +4622,9 @@ def handle_post(handler, parsed) -> bool:
             s = get_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        # Multi-user: check session ownership
+        if not _check_session_ownership(handler, s.get('profile', '')):
+            return bad(handler, "Access denied", 403)
         with _get_session_agent_lock(body["session_id"]):
             s.messages = []
             s.tool_calls = []
@@ -4308,6 +4636,12 @@ def handle_post(handler, parsed) -> bool:
         return j(handler, {"ok": True, "session": s.compact()})
 
     if parsed.path == "/api/session/truncate":
+        try:
+            _trunc_s = get_session(body.get("session_id", ""), metadata_only=True)
+            if _trunc_s and not _check_session_ownership(handler, _trunc_s.get('profile', '')):
+                return bad(handler, "Access denied", 403)
+        except Exception:
+            pass
         try:
             require(body, "session_id")
         except ValueError as e:
@@ -4489,15 +4823,35 @@ def handle_post(handler, parsed) -> bool:
         return _handle_chat_steer(handler, body)
 
     if parsed.path == "/api/terminal/start":
+        try:
+            if _block_terminal(handler):
+                return True
+        except Exception:
+            pass
         return _handle_terminal_start(handler, body)
 
     if parsed.path == "/api/terminal/input":
+        try:
+            if _block_terminal(handler):
+                return True
+        except Exception:
+            pass
         return _handle_terminal_input(handler, body)
 
     if parsed.path == "/api/terminal/resize":
+        try:
+            if _block_terminal(handler):
+                return True
+        except Exception:
+            pass
         return _handle_terminal_resize(handler, body)
 
     if parsed.path == "/api/terminal/close":
+        try:
+            if _block_terminal(handler):
+                return True
+        except Exception:
+            pass
         return _handle_terminal_close(handler, body)
 
     # ── Cron API (POST) ──
@@ -4611,6 +4965,11 @@ def handle_post(handler, parsed) -> bool:
 
     # ── Profile API (POST) ──
     if parsed.path == "/api/profile/switch":
+        try:
+            if _block_profile(handler):
+                return True
+        except Exception:
+            pass
         name = body.get("name", "").strip()
         if not name:
             return bad(handler, "name is required")
@@ -4636,6 +4995,11 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e), 409)
 
     if parsed.path == "/api/profile/create":
+        try:
+            if _block_profile(handler):
+                return True
+        except Exception:
+            pass
         name = body.get("name", "").strip()
         if not name:
             return bad(handler, "name is required")
@@ -4670,6 +5034,11 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e))
 
     if parsed.path == "/api/profile/delete":
+        try:
+            if _block_profile(handler):
+                return True
+        except Exception:
+            pass
         name = body.get("name", "").strip()
         if not name:
             return bad(handler, "name is required")
@@ -4697,6 +5066,14 @@ def handle_post(handler, parsed) -> bool:
         if "bot_name" in body:
             body["bot_name"] = (str(body["bot_name"]) or "").strip() or "Hermes"
 
+        # In multi-user mode, users should not overwrite the global default_workspace
+        try:
+            from api.config import is_multi_user_mode
+            if is_multi_user_mode():
+                body.pop("default_workspace", None)
+        except Exception:
+            pass
+
         auth_enabled_before = is_auth_enabled()
         current_cookie = parse_cookie(handler)
         logged_in_before = bool(current_cookie and verify_session(current_cookie))
@@ -4722,6 +5099,18 @@ def handle_post(handler, parsed) -> bool:
 
         saved = save_settings(body)
         saved.pop("password_hash", None)  # never expose hash to client
+
+        # In multi-user mode, override the returned default_workspace with
+        # the user's actual primary workspace (so the UI shows correct value)
+        try:
+            from api.config import is_multi_user_mode
+            if is_multi_user_mode():
+                from api.access_check import get_user_allowed_workspaces
+                _allowed = get_user_allowed_workspaces(handler)
+                if _allowed:
+                    saved["default_workspace"] = str(_allowed[0])
+        except Exception:
+            pass
 
         auth_enabled_after = is_auth_enabled()
         auth_just_enabled = bool(
@@ -5071,8 +5460,11 @@ def handle_post(handler, parsed) -> bool:
         from api.auth import (
             verify_password,
             create_session,
+            create_session_with_user_info,
             set_auth_cookie,
             is_auth_enabled,
+            verify_multi_user_login,
+            set_multi_user_cookie,
         )
         from api.auth import _check_login_rate, _record_login_attempt
 
@@ -5085,22 +5477,69 @@ def handle_post(handler, parsed) -> bool:
                 {"error": "Too many attempts. Try again in a minute."},
                 status=429,
             )
+
+        # ── Multi-user mode ──
+        try:
+            from api.config import is_multi_user_mode
+            _multi = is_multi_user_mode()
+        except Exception:
+            _multi = False
+
+        if _multi:
+            username = body.get("username", "")
+            password = body.get("password", "")
+            result = verify_multi_user_login(username, password)
+            if result is None:
+                _record_login_attempt(client_ip)
+                return bad(handler, "Invalid username or password", 401)
+
+            # Build workspace list from verify result
+            ws_list = result.get('workspaces', [])
+            if result.get('workspace') and result['workspace'] not in ws_list:
+                ws_list.insert(0, result['workspace'])
+
+            cookie_val = create_session_with_user_info(
+                username=username,
+                profile=result['profile'],
+                workspaces=ws_list,
+            )
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Cache-Control", "no-store")
+            _security_headers(handler)
+            set_multi_user_cookie(handler, cookie_val, result['profile'])
+
+            resp = {
+                "ok": True,
+                "profile": result['profile'],
+            }
+            if result.get('workspace'):
+                resp['workspace'] = result['workspace']
+            body_bytes = json.dumps(resp).encode()
+            handler.send_header("Content-Length", str(len(body_bytes)))
+            handler.end_headers()
+            handler.wfile.write(body_bytes)
+            return True
+
+        # ── Single-password mode (existing) ──
         password = body.get("password", "")
         if not verify_password(password):
             _record_login_attempt(client_ip)
             return bad(handler, "Invalid password", 401)
         cookie_val = create_session()
+        body_bytes = json.dumps({"ok": True}).encode()
         handler.send_response(200)
         handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body_bytes)))
         handler.send_header("Cache-Control", "no-store")
         _security_headers(handler)
         set_auth_cookie(handler, cookie_val)
         handler.end_headers()
-        handler.wfile.write(json.dumps({"ok": True}).encode())
+        handler.wfile.write(body_bytes)
         return True
 
     if parsed.path == "/api/auth/logout":
-        from api.auth import clear_auth_cookie, invalidate_session, parse_cookie
+        from api.auth import clear_auth_cookie, invalidate_session, parse_cookie, get_session_user_info
 
         cookie_val = parse_cookie(handler)
         if cookie_val:
@@ -5116,6 +5555,14 @@ def handle_post(handler, parsed) -> bool:
 
     # ── Checkpoints / Rollback (POST) ──
     if parsed.path == "/api/rollback/restore":
+        try:
+            _rb_ws = body.get("workspace", "")
+            if _rb_ws:
+                from api.access_check import check_workspace_access
+                if check_workspace_access(handler, _rb_ws) is None:
+                    return True
+        except Exception:
+            pass
         if not body:
             return bad(handler, "request body is required")
         workspace = body.get("workspace", "")
@@ -5132,6 +5579,33 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e), status=500)
 
     return False  # 404
+
+
+def _block_terminal(handler):
+    try:
+        from api.access_check import block_terminal
+        return block_terminal(handler)
+    except Exception:
+        return False
+
+def _block_profile(handler):
+    try:
+        from api.access_check import block_profile_switch
+        return block_profile_switch(handler)
+    except Exception:
+        return False
+
+def _check_session_ownership(handler, session_profile):
+    try:
+        from api.access_check import check_session_ownership
+        return check_session_ownership(handler, session_profile)
+    except Exception as e:
+        # On error, deny access (fail-closed) rather than leaking data
+        logger.warning(f"Session ownership check exception: {e}")
+        return False
+
+
+
 
 
 def handle_patch(handler, parsed) -> bool:
@@ -5297,6 +5771,12 @@ def _handle_list_dir(handler, parsed):
             workspace = cli_meta.get("workspace", "")
         except Exception:
             return bad(handler, "Session not found", 404)
+    # Workspace ownership check in multi-user mode
+    try:
+        from api.access_check import check_workspace_ownership
+        check_workspace_ownership(handler, Path(workspace).resolve())
+    except PermissionError as e:
+        return bad(handler, str(e), 403)
     try:
         return j(
             handler,
@@ -5778,7 +6258,7 @@ def _handle_file_raw(handler, parsed):
         return bad(handler, "Session not found", 404)
     rel = qs.get("path", [""])[0]
     force_download = qs.get("download", [""])[0] == "1"
-    target = safe_resolve(Path(s.workspace), rel)
+    target = safe_resolve_with_auth(Path(s.workspace), rel, handler)
     if not target.exists() or not target.is_file():
         return j(handler, {"error": "not found"}, status=404)
     ext = target.suffix.lower()
@@ -5815,6 +6295,12 @@ def _handle_file_read(handler, parsed):
     rel = qs.get("path", [""])[0]
     if not rel:
         return bad(handler, "path is required")
+    # Workspace ownership check in multi-user mode
+    try:
+        from api.access_check import check_workspace_ownership
+        check_workspace_ownership(handler, Path(s.workspace).resolve())
+    except PermissionError as e:
+        return bad(handler, str(e), 403)
     try:
         return j(handler, read_file_content(Path(s.workspace), rel))
     except (FileNotFoundError, ValueError) as e:
@@ -7097,6 +7583,20 @@ def _handle_chat_sync(handler, body):
                 _workspace_context_prefix,
             )
             workspace_ctx = _workspace_context_prefix(str(s.workspace))
+            from api.config import is_multi_user_mode
+            _ws_security_addendum = ""
+            if is_multi_user_mode():
+                _ws_security_addendum = (
+                    f"\n\nWORKSPACE SECURITY CONSTRAINT (multi-user mode): "
+                    f"Your workspace is restricted to {s.workspace}. "
+                    f"All file operations (create, read, write, delete, rename, search) "
+                    f"AND all terminal commands MUST stay within this directory. "
+                    f"DO NOT access files or directories outside {s.workspace}. "
+                    f"DO NOT read/write system configuration files, other users' workspaces, "
+                    f"or files under /root, /home, /etc, /proc, /sys. "
+                    f"If a user request would require accessing paths outside your workspace, "
+                    f"politely decline and explain the restriction."
+                )
             workspace_system_msg = (
                 f"Active workspace at session start: {s.workspace}\n"
                 "Every user message is prefixed with [Workspace::v1: /absolute/path] indicating the "
@@ -7107,6 +7607,7 @@ def _handle_chat_sync(handler, body):
                 "[Workspace::v1: ...] tag as your default working directory for ALL file operations: "
                 "write_file, read_file, search_files, terminal workdir, and patch. "
                 "Never fall back to a hardcoded path when this tag is present."
+                f"{_ws_security_addendum}"
             )
 
             _previous_messages = list(s.messages or [])
@@ -7313,7 +7814,7 @@ def _handle_file_delete(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if not target.exists():
             return bad(handler, "File not found", 404)
         if target.is_dir():
@@ -7337,7 +7838,7 @@ def _handle_file_save(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if not target.exists():
             return bad(handler, "File not found", 404)
         if target.is_dir():
@@ -7360,7 +7861,7 @@ def _handle_file_create(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if target.exists():
             return bad(handler, "File already exists")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -7382,7 +7883,7 @@ def _handle_file_rename(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        source = safe_resolve(Path(s.workspace), body["path"])
+        source = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if not source.exists():
             return bad(handler, "File not found", 404)
         new_name = body["new_name"].strip()
@@ -7408,7 +7909,7 @@ def _handle_create_dir(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if target.exists():
             return bad(handler, "Path already exists")
         target.mkdir(parents=True)
@@ -7429,7 +7930,7 @@ def _handle_file_reveal(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         if not target.exists():
             # Include the resolved server-side path in the error message so
             # the frontend toast can show *which* file the system expected.
@@ -7476,7 +7977,7 @@ def _handle_file_path(handler, body):
     except KeyError:
         return bad(handler, "Session not found", 404)
     try:
-        target = safe_resolve(Path(s.workspace), body["path"])
+        target = safe_resolve_with_auth(Path(s.workspace), body["path"], handler)
         return j(handler, {"ok": True, "path": str(target)})
     except (ValueError, PermissionError, OSError) as e:
         return bad(handler, _sanitize_error(e))

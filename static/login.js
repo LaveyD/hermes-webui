@@ -4,11 +4,13 @@
  */
 document.addEventListener('DOMContentLoaded', function () {
   var form = document.getElementById('login-form');
-  var input = document.getElementById('pw');
+  var userInput = document.getElementById('user');
+  var pwInput = document.getElementById('pw');
 
-  if (!form || !input) return;
+  if (!form || !pwInput) return;
 
   var invalidPw = form.getAttribute('data-invalid-pw') || 'Invalid password';
+  var invalid = form.getAttribute('data-invalid') || invalidPw;
   var connFailed = form.getAttribute('data-conn-failed') || 'Connection failed';
 
   function showErr(msg) {
@@ -27,31 +29,52 @@ document.addEventListener('DOMContentLoaded', function () {
   function _safeNextPath() {
     try {
       var raw = new URL(window.location.href).searchParams.get('next');
-      if (!raw) return './';
-      if (raw.charAt(0) !== '/') return './';             // must be path-absolute
-      if (raw.charAt(1) === '/' || raw.charAt(1) === '\\') return './'; // reject // and \\
-      if (/[\x00-\x1f\x7f\s]/.test(raw)) return './';  // reject control chars / whitespace
-      return raw;
-    } catch (_) { return './'; }
+      if (!raw) return '/';
+      if (raw.charAt(0) !== '/') return '/';             // must be path-absolute
+      if (raw.charAt(1) === '/' || raw.charAt(1) === '\\') return '/'; // reject // and \\
+      if (/[\x00-\x1f\x7f\s]/.test(raw)) return '/';  // reject control chars / whitespace
+      // Only allow navigating to root (/) or SPA hash routes (/#/...); reject
+      // deep paths like /session/xxx which the SPA doesn't handle.
+      if (raw === '/' || raw.startsWith('/#/')) return raw;
+    } catch (_) {}
+    return '/';
   }
 
   async function doLogin(e) {
     e.preventDefault();
-    var pw = input.value;
     hideErr();
+
+    var payload = { password: pwInput.value };
+    if (userInput) {
+      payload.username = userInput.value.trim();
+    }
+
     try {
       var res = await fetch('api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
+        body: JSON.stringify(payload),
         credentials: 'include',
       });
       var data = {};
       try { data = await res.json(); } catch (_) {}
       if (res.ok && data.ok) {
-        window.location.href = _safeNextPath();
+        // Clear any cached state from a previous user — the next user logging in
+        // on the same browser must not see the prior user's conversations.
+        try {
+          localStorage.removeItem('hermes-webui-session');
+          localStorage.removeItem('hermes-webui-model');
+          localStorage.removeItem('hermes-webui-workspace-panel');
+          for (var i = sessionStorage.length - 1; i >= 0; i--) {
+            var k = sessionStorage.key(i);
+            if (k && k.startsWith('hermes-')) sessionStorage.removeItem(k);
+          }
+        } catch (_) {}
+        var nextPath = _safeNextPath();
+        console.log('[login] success, cleared previous user cache, redirect to', nextPath);
+        window.location.replace(nextPath);
       } else {
-        showErr(data.error || invalidPw);
+        showErr(data.error || invalid);
       }
     } catch (ex) {
       showErr(connFailed);
@@ -60,11 +83,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
   form.addEventListener('submit', doLogin);
 
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      doLogin(e);
-    }
+  // Allow Enter key on username or password to trigger login
+  [userInput, pwInput].forEach(function (inp) {
+    if (!inp) return;
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doLogin(e);
+      }
+    });
   });
 
   // On page load, probe the server so we can distinguish "can't reach server"
@@ -75,7 +102,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var retryTimer = null;
 
     function setFormDisabled(disabled) {
-      if (input) input.disabled = disabled;
+      if (pwInput) pwInput.disabled = disabled;
+      if (userInput) userInput.disabled = disabled;
       var btn = form.querySelector('button');
       if (btn) btn.disabled = disabled;
     }

@@ -1209,6 +1209,8 @@ async function selectModelFromDropdown(value){
 }
 
 async function toggleModelDropdown(){
+  // Disabled in multi-user mode
+  if(S._multiUserMode) return;
   const dd=$('composerModelDropdown');
   const chip=$('composerModelChip');
   const sel=$('modelSelect');

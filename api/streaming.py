@@ -3000,6 +3000,20 @@ def _run_agent_streaming(
             # Prepend workspace context so the agent always knows which directory
             # to use for file operations, regardless of session age or AGENTS.md defaults.
             workspace_ctx = _workspace_context_prefix(str(s.workspace))
+            from api.config import is_multi_user_mode
+            _workspace_security_addendum = ""
+            if is_multi_user_mode():
+                _workspace_security_addendum = (
+                    f"\n\nWORKSPACE SECURITY CONSTRAINT (multi-user mode): "
+                    f"Your workspace is restricted to {s.workspace}. "
+                    f"All file operations (create, read, write, delete, rename, search) "
+                    f"AND all terminal commands MUST stay within this directory. "
+                    f"DO NOT access files or directories outside {s.workspace}. "
+                    f"DO NOT read/write system configuration files, other users' workspaces, "
+                    f"or files under /root, /home, /etc, /proc, /sys. "
+                    f"If a user request would require accessing paths outside your workspace, "
+                    f"politely decline and explain the restriction."
+                )
             workspace_system_msg = (
                 f"Active workspace at session start: {s.workspace}\n"
                 "Every user message is prefixed with [Workspace::v1: /absolute/path] indicating the "
@@ -3010,6 +3024,7 @@ def _run_agent_streaming(
                 "[Workspace::v1: ...] tag as your default working directory for ALL file operations: "
                 "write_file, read_file, search_files, terminal workdir, and patch. "
                 "Never fall back to a hardcoded path when this tag is present."
+                f"{_workspace_security_addendum}"
             )
             # Resolve personality prompt from config.yaml agent.personalities
             # (matches hermes-agent CLI behavior — passes via ephemeral_system_prompt)

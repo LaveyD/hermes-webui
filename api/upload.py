@@ -78,6 +78,12 @@ def handle_upload(handler):
         except KeyError:
             return j(handler, {'error': 'Session not found'}, status=404)
         workspace = Path(s.workspace)
+        # Workspace ownership check in multi-user mode
+        try:
+            from api.access_check import check_workspace_ownership
+            check_workspace_ownership(handler, workspace.resolve())
+        except PermissionError as e:
+            return j(handler, {'error': str(e)}, status=403)
         safe_name = _sanitize_upload_name(filename)
         dest = safe_resolve_ws(workspace, safe_name)
         dest.write_bytes(file_bytes)
@@ -232,6 +238,12 @@ def handle_upload_extract(handler):
         except KeyError:
             return j(handler, {'error': 'Session not found'}, status=404)
         workspace = Path(s.workspace)
+        # Workspace ownership check in multi-user mode
+        try:
+            from api.access_check import check_workspace_ownership
+            check_workspace_ownership(handler, workspace.resolve())
+        except PermissionError as e:
+            return j(handler, {'error': str(e)}, status=403)
         result = extract_archive(file_bytes, filename, workspace)
         return j(handler, {'ok': True, **result})
     except ValueError as e:

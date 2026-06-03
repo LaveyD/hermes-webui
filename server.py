@@ -111,6 +111,7 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+import api as _api
 from api.auth import check_auth
 from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
 from api.helpers import j, get_profile_cookie
@@ -153,18 +154,21 @@ class QuietHTTPServer(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         """Override to suppress logging for common client disconnect errors."""
         exc_type, exc_value, _ = sys.exc_info()
-        
+
+        # TEMP: Log all exceptions to debug login crash
+        import traceback
+        print(f'[handle_error] {exc_type.__name__}: {exc_value} for {client_address}', flush=True)
+        traceback.print_exc()
+
         # Silently ignore common connection errors caused by client disconnects
         if exc_type in (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError):
             return
-        
+
         # Also handle socket errors that indicate client disconnect
         if issubclass(exc_type, OSError):
-            # errno 54 is Connection reset by peer on macOS/BSD
-            # errno 104 is Connection reset by peer on Linux
-            if getattr(exc_value, 'errno', None) in (32, 54, 104, 110):  # EPIPE, ECONNRESET, ETIMEDOUT
+            if getattr(exc_value, 'errno', None) in (32, 54, 104, 110):
                 return
-        
+
         # For other errors, use default logging
         super().handle_error(request, client_address)
 
@@ -238,6 +242,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         self._req_t0 = time.time()
+        _api._current_request_handler.handler = self
         # Per-request profile context from cookie (issue #798)
         cookie_profile = get_profile_cookie(self)
         if cookie_profile:
@@ -252,24 +257,35 @@ class Handler(BaseHTTPRequestHandler):
             print(f'[webui] ERROR {self.command} {self.path}\n' + traceback.format_exc(), flush=True)
             return j(self, {'error': 'Internal server error'}, status=500)
         finally:
+            _api._current_request_handler.handler = None
             clear_request_profile()
 
     def _handle_write(self, route_func) -> None:
         self._req_t0 = time.time()
-        # Per-request profile context from cookie (issue #798)
-        cookie_profile = get_profile_cookie(self)
-        if cookie_profile:
-            set_request_profile(cookie_profile)
+        print(f'[DEBUG _handle_write] path={self.path}', flush=True)
         try:
+            _api._current_request_handler.handler = self
+            cookie_profile = get_profile_cookie(self)
+            if cookie_profile:
+                set_request_profile(cookie_profile)
             parsed = urlparse(self.path)
-            if not check_auth(self, parsed): return
+            print(f'[DEBUG _handle_write] calling check_auth for {parsed.path}', flush=True)
+            if not check_auth(self, parsed):
+                print(f'[DEBUG _handle_write] check_auth returned False', flush=True)
+                return
+            print(f'[DEBUG _handle_write] calling route_func for {parsed.path}', flush=True)
             result = route_func(self, parsed)
+            print(f'[DEBUG _handle_write] route_func returned {result} for {parsed.path}', flush=True)
             if result is False:
                 return j(self, {'error': 'not found'}, status=404)
         except Exception as e:
             print(f'[webui] ERROR {self.command} {self.path}\n' + traceback.format_exc(), flush=True)
-            return j(self, {'error': 'Internal server error'}, status=500)
+            try:
+                return j(self, {'error': 'Internal server error'}, status=500)
+            except Exception:
+                pass
         finally:
+            _api._current_request_handler.handler = None
             clear_request_profile()
 
     def do_POST(self) -> None:

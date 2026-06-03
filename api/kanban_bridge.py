@@ -30,6 +30,15 @@ def _kb():
     return kb
 
 
+def _kb_check():
+    """Check if kanban_db module has required methods. Raises if not."""
+    kb = _kb()
+    required = ['list_boards', 'board_exists', 'init_db']
+    for attr in required:
+        if not hasattr(kb, attr):
+            raise AttributeError(f"kanban_db missing '{attr}'")
+
+
 def _resolve_board(parsed):
     """Validate and normalise a ?board=<slug> query param.
 

@@ -311,8 +311,34 @@
   .app-titlebar-title{font-size:12px;font-weight:600;color:var(--text);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;}
   .app-titlebar-sub{font-size:10px;color:var(--muted);background:var(--hover-bg);padding:2px 7px;border-radius:4px;font-family:'SF Mono',ui-monospace,monospace;white-space:nowrap;flex-shrink:0;}
   .app-titlebar-sub[hidden]{display:none;}
-  .app-titlebar-hamburger,.app-titlebar-spacer{display:none;width:32px;height:32px;flex-shrink:0;}
-  .app-titlebar-hamburger{-webkit-app-region:no-drag;align-items:center;justify-content:center;background:none;border:none;color:var(--muted);border-radius:8px;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent;transition:background-color .15s,color .15s;}
+.app-titlebar-hamburger,.app-titlebar-spacer{display:none;width:32px;height:32px;flex-shrink:0;}
+.app-titlebar-spacer{flex:1;}
+.app-titlebar-hamburger{-webkit-app-region:no-drag;align-items:center;justify-content:center;background:none;border:none;color:var(--muted);border-radius:8px;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent;transition:background-color .15s,color .15s;}
+.app-titlebar-signout{-webkit-app-region:no-drag;position:fixed !important;right:10px;display:block !important;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;cursor:pointer;width:32px;height:32px;flex-shrink:0;transition:background-color .15s,color .15s,border-color .15s;padding:0;-webkit-tap-highlight-color:transparent;z-index:100;}
+.app-titlebar-signout:hover{color:var(--accent);border-color:rgba(233,69,96,.3);background:var(--hover-bg);}
+
+/* Multi-user mode: disable workspace/model switching in composer bar */
+body.multi-user .composer-workspace-chevron,
+body.multi-user .composer-model-chevron,
+body.multi-user .composer-profile-chevron{display:none !important;}
+body.multi-user .composer-workspace-chip,
+body.multi-user .composer-model-chip,
+body.multi-user .composer-profile-chip{cursor:default !important;pointer-events:none !important;opacity:.7 !important;}
+body.multi-user .composer-workspace-chip:hover,
+body.multi-user .composer-model-chip:hover,
+body.multi-user .composer-profile-chip:hover{background-color:transparent !important;}
+/* Multi-user mode: hide workspace and settings nav tabs in sidebar/rail */
+body.multi-user .nav-tab[data-panel="workspaces"],
+body.multi-user .nav-tab[data-panel="profiles"],
+body.multi-user .nav-tab[data-panel="kanban"]{display:none !important;}
+/* Hide update banner in multi-user mode */
+body.multi-user .update-banner{display:none !important;}
+/* Multi-user mode: only keep Appearance & Plugins in settings menu */
+body.multi-user .side-menu-item[data-settings-section="conversation"],
+body.multi-user .side-menu-item[data-settings-section="preferences"],
+body.multi-user .side-menu-item[data-settings-section="providers"],
+body.multi-user .side-menu-item[data-settings-section="system"]{display:none !important;}
+
   .app-titlebar-hamburger:hover{background:var(--hover-bg);color:var(--text);}
   .sidebar{width:300px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:visible;flex-shrink:0;transition:width .24s cubic-bezier(.22,1,.36,1),opacity .18s ease,transform .24s cubic-bezier(.22,1,.36,1),border-color .24s ease;}
   .sidebar-header{padding:16px 18px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}

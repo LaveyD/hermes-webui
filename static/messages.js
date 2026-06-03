@@ -1338,6 +1338,15 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const data=await api(`/api/session?session_id=${encodeURIComponent(activeSid)}`);
       const session=data&&data.session;
       if(!session) return false;
+      // Multi-user: verify session belongs to current profile before restoring
+      if(S._multiUserMode && session.profile && S.activeProfile){
+        if(session.profile !== S.activeProfile){
+          // This session belongs to another user — clear stale localStorage and abort
+          localStorage.removeItem('hermes-webui-session');
+          if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(null);
+          return false;
+        }
+      }
       if(session.active_stream_id||session.pending_user_message) return false;
       _clearOwnerInflightState();
       _closeSource();

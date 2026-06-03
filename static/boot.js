@@ -897,6 +897,8 @@ function clearPreview(opts={}){
 $('btnClearPreview').onclick=handleWorkspaceClose;
 // workspacePath click handler removed -- use topbar workspace chip dropdown instead
 $('modelSelect').onchange=async()=>{
+  // Disabled in multi-user mode
+  if(S._multiUserMode) return;
   if(!S.session)return;
   const selectedModel=$('modelSelect').value;
   const modelState=(typeof _modelStateForSelect==='function')
@@ -1468,6 +1470,18 @@ function applyBotName(){
     if(S.session) syncTopbar();
   }).catch(()=>{});
   window._modelDropdownReady=_modelDropdownReady;
+  // Check multi-user mode early so workspace/model chips are disabled on boot
+  try{
+    const _authStatus = await api('/api/auth/status');
+    S._multiUserMode = !!_authStatus.multi_user;
+    document.body.classList.toggle('multi-user', S._multiUserMode);
+    if(S._multiUserMode){
+      // Hide workspace/settings nav tabs in sidebar-nav and rail
+      document.querySelectorAll('.nav-tab[data-panel="workspaces"],.nav-tab[data-panel="profiles"],.nav-tab[data-panel="kanban"]').forEach(e=>{
+        e.style.display='none';
+      });
+    }
+  }catch(e){}
   // Pre-load workspace list so sidebar name is correct from first render.
   // Render the session list before restoring the saved conversation so a stale
   // saved-session/client-side boot error cannot leave the sidebar empty forever.

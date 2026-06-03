@@ -3624,8 +3624,9 @@ function syncWorkspaceDisplays(){
   if(composerLabel) composerLabel.textContent=S._bootReady?label:'';
   if(mobileLabel) mobileLabel.textContent=S._bootReady?label:'';
   if(composerChip){
-    composerChip.disabled=!hasWorkspace;
-    composerChip.title=hasWorkspace?ws:t('no_workspace');
+    // In multi-user mode, keep the chip disabled (read-only) even if workspace exists
+    composerChip.disabled = S._multiUserMode ? true : !hasWorkspace;
+    composerChip.title = hasWorkspace ? ws : t('no_workspace');
     composerChip.classList.toggle('active',!!(composerDropdown&&composerDropdown.classList.contains('open')));
   }
   if(mobileAction){
@@ -4463,6 +4464,8 @@ function renderProfileDropdown(data) {
 }
 
 function toggleProfileDropdown() {
+  // Disabled in multi-user mode
+  if(S._multiUserMode) return;
   const dd = $('profileDropdown');
   if (!dd) return;
   if (dd.classList.contains('open')) { closeProfileDropdown(); return; }
@@ -5345,6 +5348,21 @@ async function loadSettingsPanel(){
     try{
       const authStatus=await api('/api/auth/status');
       _setSettingsAuthButtonsVisible(!!authStatus.auth_enabled);
+      // In multi-user mode, disable workspace/model switching in the composer bar
+      const isMultiUser = !!authStatus.multi_user;
+      S._multiUserMode = isMultiUser;
+      document.body.classList.toggle('multi-user', isMultiUser);
+      if(isMultiUser){
+        // Hide dropdown arrows and disable switching (read-only display)
+        ['composerWorkspaceChip','composerModelChip','profileChip'].forEach(id=>{
+          const el=$(id); if(!el) return;
+          el.disabled=true; el.onclick=null; el.setAttribute('data-disabled','true');
+        });
+        // Hide chevron arrows
+        document.querySelectorAll('.composer-workspace-chevron,.composer-model-chevron,.composer-profile-chevron').forEach(e=>{
+          e.style.display='none';
+        });
+      }
     }catch(e){}
     // #1560: env-var-locked password also disables the Disable Auth button —
     // clearing settings.password_hash is silent no-op when the env var is set,
@@ -5806,6 +5824,8 @@ function _setSettingsAuthButtonsVisible(active){
   if(signOutBtn) signOutBtn.style.display=active?'':'none';
   const disableBtn=$('btnDisableAuth');
   if(disableBtn) disableBtn.style.display=active?'':'none';
+  const titlebarSignOut=$('btnTitlebarSignOut');
+  if(titlebarSignOut) titlebarSignOut.style.display=active?'flex':'none';
 }
 
 function _applySavedSettingsUi(saved, body, opts){
@@ -5981,6 +6001,20 @@ async function saveSettings(andClose){
 async function signOut(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
+    // Clear all session-related cached data so the next user does not see
+    // the previous user's conversations
+    try{
+      localStorage.removeItem('hermes-webui-session');
+      localStorage.removeItem('hermes-webui-model');
+      localStorage.removeItem('hermes-webui-workspace-panel');
+      // Clear any per-session queues in sessionStorage
+      for(let i=sessionStorage.length-1;i>=0;i--){
+        const key=sessionStorage.key(i);
+        if(key&&key.startsWith('hermes-queue-')) sessionStorage.removeItem(key);
+      }
+    }catch(_){}
+    // Reset global state
+    if(typeof S!=='undefined'){S.session=null;S.messages=[];S.entries=[];S.toolCalls=[];}
     window.location.href='login';
   }catch(e){
     showToast(t('sign_out_failed')+e.message);

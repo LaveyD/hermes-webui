@@ -250,12 +250,16 @@ def read_body(handler) -> dict:
 
 # ── Profile cookie helpers (issue #798) ─────────────────────────────────────
 
-PROFILE_COOKIE_NAME = 'hermes_profile'
+PROFILE_COOKIE_NAME = None
 
 
 def get_profile_cookie_name() -> str:
-    """Return the cookie name used to persist the active WebUI profile."""
-    return os.getenv('WEBUI_PROFILE_COOKIE_NAME', PROFILE_COOKIE_NAME)
+    """Return the port-scoped cookie name for the active WebUI profile."""
+    if PROFILE_COOKIE_NAME is None:
+        # Import here to compute a port-scoped name (avoids circular import at module level)
+        from api.auth import PROFILE_COOKIE_NAME as _auth_profile
+        return _auth_profile
+    return PROFILE_COOKIE_NAME
 
 
 def get_profile_cookie(handler) -> str | None:
